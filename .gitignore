@@ -3,4 +3,5 @@
 !/storage/logs/.gitkeep
 /storage/sess_*
 /vendor
+/database
 
