@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css" rel="stylesheet">
-    <link href="<?= e(url('/assets/css/app.css?v=20260907b')) ?>" rel="stylesheet">
+    <link href="<?= e(url('/assets/css/app.css?v=20260916')) ?>" rel="stylesheet">
 </head>
 <body>
 <div class="app-shell">
@@ -48,7 +48,6 @@
                             <div class="notification-list"><div class="notification-empty">กำลังโหลดการแจ้งเตือน...</div></div>
                         </div>
                     </div>
-                <button class="icon-button position-relative" type="button" aria-label="การแจ้งเตือน" title="ยังไม่มีการแจ้งเตือนใหม่"><i class="fa-regular fa-bell"></i><span class="notification-dot"></span></button>
                 <a class="user-meta d-none d-sm-flex text-decoration-none text-reset" href="<?= e(url('/profile')) ?>" title="แก้ไขโปรไฟล์"><span class="avatar"><i class="fa-solid fa-user"></i></span><span><strong><?= e($authUser['name'] ?? '') ?></strong><small><?= e($authUser['role'] ?? '') ?></small></span></a>
                 <form method="post" action="<?= e(url('/logout')) ?>" class="m-0"><?= csrf_field() ?><button class="btn btn-outline-danger btn-sm" type="submit"><i class="fa-solid fa-right-from-bracket me-1"></i><span class="d-none d-md-inline">Logout</span></button></form>
             </div>
@@ -62,7 +61,7 @@
 </div>
 <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 <style>
-.topbar-actions>.icon-button.position-relative{display:none}.notification-wrap{position:relative}.notification-panel{position:absolute;top:calc(100% + 12px);right:0;width:min(360px,calc(100vw - 24px));background:#fff;border:1px solid #d9e2ec;border-radius:14px;box-shadow:0 16px 36px rgba(16,42,67,.16);z-index:2100;overflow:hidden}.notification-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #edf2f7;color:#102a43}.notification-close{border:0;background:transparent;color:#829ab1}.notification-list{max-height:340px;overflow:auto}.notification-empty{padding:24px 16px;text-align:center;color:#829ab1;font-size:13px}.notification-item{display:flex;gap:10px;padding:12px 16px;color:#486581;text-decoration:none;border-bottom:1px solid #f0f4f8}.notification-item:hover{background:#f7faff}.notification-item-icon{width:30px;height:30px;display:grid;place-items:center;flex:none;border-radius:50%}.notification-item-danger .notification-item-icon{color:#dc2626;background:#fef2f2}.notification-item-warning .notification-item-icon{color:#b45309;background:#fffbeb}.notification-item strong{display:block;color:#102a43;font-size:13px}.notification-item small{display:block;line-height:1.45}.notification-count{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:99px;background:#dc2626;color:#fff;font-size:10px;line-height:17px;text-align:center}
+.notification-wrap{position:relative}.notification-panel{position:absolute;top:calc(100% + 12px);right:0;width:min(360px,calc(100vw - 24px));background:#fff;border:1px solid #d9e2ec;border-radius:14px;box-shadow:0 16px 36px rgba(16,42,67,.16);z-index:2100;overflow:hidden}.notification-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #edf2f7;color:#102a43}.notification-close{border:0;background:transparent;color:#829ab1}.notification-list{max-height:340px;overflow:auto}.notification-empty{padding:24px 16px;text-align:center;color:#829ab1;font-size:13px}.notification-item{display:flex;gap:10px;padding:12px 16px;color:#486581;text-decoration:none;border-bottom:1px solid #f0f4f8}.notification-item:hover{background:#f7faff}.notification-item-icon{width:30px;height:30px;display:grid;place-items:center;flex:none;border-radius:50%}.notification-item-danger .notification-item-icon{color:#dc2626;background:#fef2f2}.notification-item-warning .notification-item-icon{color:#b45309;background:#fffbeb}.notification-item strong{display:block;color:#102a43;font-size:13px}.notification-item small{display:block;line-height:1.45}.notification-count{position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;padding:0 4px;border-radius:99px;background:#dc2626;color:#fff;font-size:10px;line-height:17px;text-align:center}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="<?= e(url('/assets/js/app.js?v=20260907d')) ?>"></script>

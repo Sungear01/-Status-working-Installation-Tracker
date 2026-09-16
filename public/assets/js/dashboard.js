@@ -2,7 +2,7 @@
     'use strict';
     if (!window.Chart || !window.dashboardCharts) return;
     Chart.defaults.font.family = "'Noto Sans Thai', sans-serif";
-    Chart.defaults.color = '#62748a';
+    Chart.defaults.color = '#56708c';
     const palette = ['#2563EB','#16A34A','#F59E0B','#DC2626','#7C3AED','#0891B2','#64748B','#DB2777'];
     const make = (id, source, type, label) => {
         const canvas = document.getElementById(id);
