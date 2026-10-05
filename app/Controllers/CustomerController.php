@@ -9,7 +9,9 @@ use App\Core\Csrf;
 use App\Core\View;
 use App\Repositories\CompanyGroupRepository;
 use App\Repositories\CompanyRepository;
+use App\Repositories\CustomColumnRepository;
 use App\Repositories\CustomerRepository;
+use App\Repositories\EngineerRepository;
 use App\Repositories\LogRepository;
 use App\Services\ActivityLogger;
 use App\Services\MailService;
@@ -59,8 +61,34 @@ final class CustomerController
                 }
             }
         }
+        $result = $repository->paginate($queryFilters);
+
+        // Custom columns belong to one company, so they only apply on a single-company tab.
+        $customColumns = [];
+        if ($activeGroup === null && ($viewFilters['company_id'] ?? '') !== '') {
+            $customRepository = new CustomColumnRepository();
+            $customColumns = $customRepository->forCompany((int) $viewFilters['company_id']);
+            if ($customColumns !== []) {
+                $values = $customRepository->valuesFor(array_column($result['items'], 'id'), array_column($customColumns, 'id'));
+                foreach ($result['items'] as &$item) {
+                    $item += CustomColumnRepository::resolve($customColumns, $item, $values[(int) $item['id']] ?? []);
+                }
+                unset($item);
+            }
+        }
+
+        // The built-in "วิศวกร" column lives in its own table, so it is merged onto each row like a custom column.
+        $engineers = new EngineerRepository();
+        $engineerValues = $engineers->valuesFor(array_column($result['items'], 'id'));
+        foreach ($result['items'] as &$item) {
+            $item['engineer'] = $engineerValues[(int) $item['id']] ?? null;
+        }
+        unset($item);
+
         View::render('customers/index', [
-            'result' => $repository->paginate($queryFilters),
+            'result' => $result,
+            'customColumns' => $customColumns,
+            'engineerOptions' => $engineers->names(),
             'facets' => $repository->facets(),
             'filters' => $viewFilters,
             'companies' => $companies,
@@ -79,6 +107,7 @@ final class CustomerController
             exit('ไม่พบข้อมูลลูกค้า');
         }
         $this->assertCompanyAccess($id);
+        $customer['engineer'] = (new EngineerRepository())->valueFor((int) $id);
         View::render('customers/show', ['customer' => $customer, 'history' => (new LogRepository())->customerHistory($id), 'pageTitle' => 'รายละเอียดลูกค้า']);
     }
 
@@ -114,6 +143,8 @@ final class CustomerController
         $data = $this->trackingInput($old);
         $data['updated_by'] = Auth::id();
         $repository->update($id, $data);
+        $customValues = $this->saveCustomValues((int) $id);
+        $engineerValue = $this->saveEngineer((int) $id);
         $savedCustomer = $repository->find($id);
         if ($savedCustomer) {
             (new MailService())->sendCustomerSavedToAdmins($savedCustomer, Auth::user(), false);
@@ -123,7 +154,7 @@ final class CustomerController
         (new ActivityLogger())->log('update', 'customer', $id, 'แก้ไขข้อมูลงานติดตั้ง', $oldValues, $data);
         if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest') {
             header('Content-Type: application/json; charset=UTF-8');
-            echo json_encode(['success' => true, 'message' => 'บันทึกข้อมูลเรียบร้อย', 'customer' => $repository->find($id)], JSON_UNESCAPED_UNICODE);
+            echo json_encode(['success' => true, 'message' => 'บันทึกข้อมูลเรียบร้อย', 'customer' => ($repository->find($id) ?? []) + $customValues + $engineerValue], JSON_UNESCAPED_UNICODE);
             return;
         }
         flash('success', 'บันทึกข้อมูลเรียบร้อย');
@@ -137,6 +168,62 @@ final class CustomerController
             redirect('/customers' . ($search !== '' ? '?search=' . rawurlencode($search) : ''));
         }
         redirect('/customers/' . rawurlencode($id));
+    }
+
+    /**
+     * Save the "วิศวกร" dropdown when it was posted, and return the stored value as ['engineer' => ...] so the
+     * table can repaint the cell. A request that does not carry the field leaves the saved engineer alone.
+     */
+    private function saveEngineer(int $customerId): array
+    {
+        $engineers = new EngineerRepository();
+        if (!array_key_exists('engineer', $_POST) || !$this->canEditField('engineer')) {
+            return ['engineer' => $engineers->valueFor($customerId)];
+        }
+        $value = mb_substr(trim((string) $_POST['engineer']), 0, EngineerRepository::MAX_LENGTH);
+        $engineers->saveValue($customerId, $value);
+        return ['engineer' => $value === '' ? null : $value];
+    }
+
+    /**
+     * Save the custom-column fields posted from the edit modal (custom[<column id>] => value) for the company
+     * given in custom_company_id, and return every custom column's resolved value (formulas recomputed).
+     */
+    private function saveCustomValues(int $customerId): array
+    {
+        $companyId = (int) ($_POST['custom_company_id'] ?? 0);
+        if ($companyId <= 0) {
+            return [];
+        }
+        $customRepository = new CustomColumnRepository();
+        $columns = $customRepository->forCompany($companyId);
+        if ($columns === []) {
+            return [];
+        }
+        $posted = is_array($_POST['custom'] ?? null) ? $_POST['custom'] : [];
+        foreach ($columns as $column) {
+            $isFormula = $column['type'] === 'date' && !empty($column['formula_source']);
+            if ($isFormula || !array_key_exists((string) $column['id'], $posted)) {
+                continue;
+            }
+            $value = trim((string) $posted[(string) $column['id']]);
+            if ($column['type'] === 'date') {
+                $value = preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) ? $value : '';
+            } elseif ($column['type'] === 'number') {
+                $value = str_replace([',', ' '], '', $value);
+                // Plain decimals only (no exponent), at most 15 digits before the point and 6 after; ".5" is kept as "0.5".
+                $value = preg_replace('/^(-?)\./', '${1}0.', $value);
+                $value = preg_match('/^-?\d{1,15}(\.\d{1,6})?$/', $value) ? $value : '';
+            } elseif (($options = CustomColumnRepository::options($column)) !== []) {
+                $value = in_array($value, $options, true) ? $value : '';
+            } else {
+                $value = mb_substr($value, 0, 5000);
+            }
+            $customRepository->saveValue($customerId, (int) $column['id'], $value);
+        }
+        $row = (new CustomerRepository())->find((string) $customerId) ?? [];
+        $values = $customRepository->valuesFor([$customerId], array_column($columns, 'id'));
+        return CustomColumnRepository::resolve($columns, $row, $values[$customerId] ?? []);
     }
 
     public function destroy(string $id): void
@@ -163,6 +250,14 @@ final class CustomerController
         $headers = ['ลำดับ','รายชื่อลูกค้า','Zone','ขนาดเครื่อง','วันที่ส่ง PO','กำหนดหลังจัดส่ง PO','นัดติดตั้ง 1','ติดตั้ง 1','นัดติดตั้ง 2','ติดตั้ง 2','นัดติดตั้ง 3','ครบกำหนด 60 วัน','วันช้า/เร็ว','Status','หมายเหตุทางฝ่ายก่อสร้าง','สถานะงาน','หมายเหตุทาง CAP+'];
         $fields = ['name','zone','machine_size','po_sent_date','po_due_date','engineer_appointment_1','installation_date_1','engineer_appointment_2','installation_date_2','engineer_appointment_3','due_60_date','days_early_late','status','construction_notes','work_status','cap_notes','installation_date_3'];
         $headers[] = 'วันที่เข้าติดตั้งครั้งที่ 3';
+        // The engineer of each row comes from its own table, so it is merged in and exported as a last column.
+        $engineerValues = (new EngineerRepository())->valuesFor(array_column($rows, 'id'));
+        foreach ($rows as &$exportRow) {
+            $exportRow['engineer'] = $engineerValues[(int) $exportRow['id']] ?? '';
+        }
+        unset($exportRow);
+        $fields[] = 'engineer';
+        $headers[] = 'วิศวกร';
         $filename = 'customers-' . date('Ymd-His');
         if ($format === 'csv') {
             header('Content-Type: text/csv; charset=UTF-8');

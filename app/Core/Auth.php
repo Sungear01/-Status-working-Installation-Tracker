@@ -24,7 +24,59 @@ final class Auth
     public static function can(string $permission): bool
     {
         $user = self::user();
-        return $user !== null && ($user['role_slug'] === 'admin' || in_array($permission, $user['permissions'] ?? [], true));
+        return $user !== null && (self::isSuperRole($user['role_slug']) || in_array($permission, $user['permissions'] ?? [], true));
+    }
+
+    /** Admin and developer (system creator) roles bypass permission and company restrictions. */
+    public static function isSuperRole(?string $roleSlug): bool
+    {
+        return $roleSlug === 'admin' || $roleSlug === 'developer';
+    }
+
+    /** True only for a signed-in system creator who is not currently using another user's account. */
+    public static function isDeveloper(): bool
+    {
+        $user = self::user();
+        return $user !== null && self::impersonator() === null && ($user['role_slug'] ?? null) === 'developer';
+    }
+
+    /** The original system creator while they are using another user's account, otherwise null. */
+    public static function impersonator(): ?array
+    {
+        return $_SESSION['impersonator'] ?? null;
+    }
+
+    /** Switch the session to $target while remembering the developer so they can switch back. */
+    public static function startImpersonation(array $target, array $permissions): void
+    {
+        $developer = self::user();
+        session_regenerate_id(true);
+        $_SESSION['impersonator'] = [
+            'id' => (int) $developer['id'],
+            'username' => $developer['username'],
+            'name' => $developer['name'],
+            'session_token' => $developer['session_token'] ?? null,
+        ];
+        $_SESSION['auth'] = [
+            'id' => (int) $target['id'],
+            'username' => $target['username'],
+            'name' => $target['name'],
+            'role' => $target['role_name'],
+            'role_slug' => $target['role_slug'],
+            'company_id' => isset($target['company_id']) && $target['company_id'] !== null ? (int) $target['company_id'] : null,
+            'permissions' => $permissions,
+            'must_change_password' => false,
+            'session_token' => null,
+        ];
+        $_SESSION['last_activity'] = time();
+    }
+
+    /** Forget the impersonation and return the developer it belonged to, or null when not impersonating. */
+    public static function endImpersonation(): ?array
+    {
+        $impersonator = self::impersonator();
+        unset($_SESSION['impersonator']);
+        return $impersonator;
     }
 
     /** Return the first application page available to the signed-in user. */
@@ -49,7 +101,7 @@ final class Auth
         if ($user === null || !self::can('edit_customer')) {
             return false;
         }
-        if ($user['role_slug'] === 'admin') {
+        if (self::isSuperRole($user['role_slug'])) {
             return true;
         }
         $fieldsByRole = config('customer.editable_fields_by_role', []);
@@ -80,7 +132,7 @@ final class Auth
     public static function restrictedCompanyId(): ?int
     {
         $user = self::user();
-        if ($user === null || ($user['role_slug'] ?? null) === 'admin') {
+        if ($user === null || self::isSuperRole($user['role_slug'] ?? null)) {
             return null;
         }
         return isset($user['company_id']) && $user['company_id'] !== null ? (int) $user['company_id'] : null;
@@ -90,6 +142,11 @@ final class Auth
     {
         if (!self::check()) {
             return false;
+        }
+        // While impersonating, the session belongs to the developer, so validate the developer's own token.
+        $impersonator = self::impersonator();
+        if ($impersonator !== null) {
+            return (new \App\Repositories\UserRepository())->sessionTokenMatches((int) $impersonator['id'], $impersonator['session_token'] ?? null);
         }
         return (new \App\Repositories\UserRepository())->sessionTokenMatches(self::id() ?? 0, $_SESSION['auth']['session_token'] ?? null);
     }
@@ -113,7 +170,7 @@ final class Auth
         $_SESSION['auth']['role_slug'] = $user['role_slug'];
         $_SESSION['auth']['company_id'] = isset($user['company_id']) && $user['company_id'] !== null ? (int) $user['company_id'] : null;
         $_SESSION['auth']['permissions'] = $repository->permissions((int) $user['id'], (int) $user['role_id']);
-        $_SESSION['auth']['must_change_password'] = (bool) ($user['must_change_password'] ?? false);
+        $_SESSION['auth']['must_change_password'] = self::impersonator() === null && (bool) ($user['must_change_password'] ?? false);
 
         return true;
     }

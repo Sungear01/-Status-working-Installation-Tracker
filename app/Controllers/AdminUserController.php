@@ -20,9 +20,16 @@ final class AdminUserController
 
     public function index(): void
     {
+        $users = (new UserRepository())->all();
+        $roles = (new RoleRepository())->all();
+        if (!Auth::isDeveloper()) {
+            // The system creator account and role stay invisible to everyone else.
+            $users = array_values(array_filter($users, static fn (array $user): bool => $user['role_slug'] !== 'developer'));
+            $roles = array_values(array_filter($roles, static fn (array $role): bool => $role['slug'] !== 'developer'));
+        }
         View::render('admin/users/index', [
-            'users' => (new UserRepository())->all(),
-            'roles' => (new RoleRepository())->all(),
+            'users' => $users,
+            'roles' => $roles,
             'companies' => (new CompanyRepository())->all(),
             'pageTitle' => 'จัดการผู้ใช้งาน',
         ]);
@@ -32,6 +39,7 @@ final class AdminUserController
     {
         $this->verifyCsrf();
         $data = $this->validatedUser(true);
+        $this->guardDeveloperRole($data['role_id']);
         if ((new UserRepository())->usernameExists($data['username'])) {
             flash('error', 'Username นี้ถูกใช้งานแล้ว');
             redirect('/admin/users');
@@ -61,7 +69,9 @@ final class AdminUserController
             http_response_code(404);
             exit('ไม่พบผู้ใช้งาน');
         }
+        $this->guardDeveloperAccount($userId);
         $data = $this->validatedUser(false);
+        $this->guardDeveloperRole($data['role_id']);
         if ((new UserRepository())->usernameExists($data['username'], $userId)) {
             flash('error', 'Username นี้ถูกใช้งานแล้ว');
             redirect('/admin/users');
@@ -83,6 +93,7 @@ final class AdminUserController
     {
         $this->verifyCsrf();
         $userId = (int) $id;
+        $this->guardDeveloperAccount($userId);
         if ($userId === Auth::id()) {
             flash('error', 'ไม่สามารถปิดบัญชีของตนเอง');
             redirect('/admin/users');
@@ -98,6 +109,7 @@ final class AdminUserController
     public function sendResetLink(string $id): void
     {
         $this->verifyCsrf();
+        $this->guardDeveloperAccount((int) $id);
         $user = (new UserRepository())->find((int) $id);
         if (!$user) {
             http_response_code(404);
@@ -131,6 +143,7 @@ final class AdminUserController
     public function resetPassword(string $id): void
     {
         $this->verifyCsrf();
+        $this->guardDeveloperAccount((int) $id);
         $password = (string) ($_POST['password'] ?? '');
         if (strlen($password) < 12) {
             flash('error', 'Password ต้องมีอย่างน้อย 12 ตัวอักษร');
@@ -171,6 +184,27 @@ final class AdminUserController
         }
         $companyId = filter_var($_POST['company_id'] ?? null, FILTER_VALIDATE_INT);
         return ['username' => $username, 'name' => mb_substr($name, 0, 150), 'email' => $email ?: null, 'password' => $password, 'role_id' => (int) $roleId, 'company_id' => $companyId ?: null, 'is_active' => isset($_POST['is_active']) ? 1 : 0];
+    }
+
+    /** Only the system creator may change a developer account, so an admin cannot take it over. */
+    private function guardDeveloperAccount(int $userId): void
+    {
+        $user = (new UserRepository())->findWithRole($userId);
+        if ($user && $user['role_slug'] === 'developer' && !Auth::isDeveloper()) {
+            http_response_code(403);
+            exit('403 - คุณไม่มีสิทธิ์ดำเนินการนี้');
+        }
+    }
+
+    /** Only the system creator may grant the developer role. */
+    private function guardDeveloperRole(int $roleId): void
+    {
+        foreach ((new RoleRepository())->all() as $role) {
+            if ((int) $role['id'] === $roleId && $role['slug'] === 'developer' && !Auth::isDeveloper()) {
+                http_response_code(403);
+                exit('403 - คุณไม่มีสิทธิ์ดำเนินการนี้');
+            }
+        }
     }
 
     private function verifyCsrf(): void

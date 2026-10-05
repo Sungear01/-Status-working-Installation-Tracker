@@ -11,6 +11,7 @@ use App\Controllers\CustomerController;
 use App\Controllers\DashboardController;
 use App\Controllers\ErrorPreviewController;
 use App\Controllers\ForgotPasswordController;
+use App\Controllers\ImpersonationController;
 use App\Controllers\PasswordController;
 use App\Controllers\PasswordResetController;
 use App\Controllers\ProfileController;
@@ -42,7 +43,14 @@ $router->post('/customers/{id}/delete', [CustomerController::class, 'destroy'], 
 
 $router->post('/companies', [CompanyController::class, 'store'], ['manage_companies']);
 $router->post('/companies/{id}', [CompanyController::class, 'update'], ['manage_companies']);
+$router->post('/companies/{id}/columns', [CompanyController::class, 'updateColumns'], ['manage_companies']);
+$router->post('/engineers', [CompanyController::class, 'updateEngineers'], ['manage_companies']);
+$router->post('/companies/{id}/custom-columns', [CompanyController::class, 'storeCustomColumn'], ['manage_companies']);
+$router->post('/companies/{id}/custom-columns/{columnId}', [CompanyController::class, 'updateCustomColumn'], ['manage_companies']);
+$router->post('/companies/{id}/custom-columns/{columnId}/delete', [CompanyController::class, 'destroyCustomColumn'], ['manage_companies']);
 $router->post('/companies/{id}/delete', [CompanyController::class, 'destroy'], ['manage_companies']);
+$router->post('/company-groups/{id}', [CompanyController::class, 'updateGroup'], ['manage_companies']);
+$router->post('/company-groups/{id}/delete', [CompanyController::class, 'destroyGroup'], ['manage_companies']);
 
 $router->get('/admin/users', [AdminUserController::class, 'index'], ['manage_users']);
 $router->post('/admin/users', [AdminUserController::class, 'store'], ['manage_users']);
@@ -51,6 +59,8 @@ $router->post('/admin/users/{id}/toggle', [AdminUserController::class, 'toggle']
 $router->post('/admin/users/{id}/reset-password', [AdminUserController::class, 'resetPassword'], ['manage_users']);
 $router->post('/admin/users/{id}/send-reset-link', [AdminUserController::class, 'sendResetLink'], ['manage_users']);
 $router->post('/admin/users/{id}/unlock', [AdminUserController::class, 'unlock'], ['manage_users']);
+$router->post('/admin/users/{id}/impersonate', [ImpersonationController::class, 'start'], ['auth']);
+$router->post('/impersonate/stop', [ImpersonationController::class, 'stop'], ['auth']);
 $router->get('/admin/roles', [AdminRoleController::class, 'index'], ['manage_users']);
 $router->post('/admin/roles/{id}', [AdminRoleController::class, 'update'], ['manage_users']);
 $router->get('/admin/logs', [AdminLogController::class, 'index'], ['view_activity_log']);

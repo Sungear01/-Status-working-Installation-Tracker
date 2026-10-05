@@ -8,6 +8,8 @@ use App\Core\Auth;
 use App\Core\Csrf;
 use App\Repositories\CompanyGroupRepository;
 use App\Repositories\CompanyRepository;
+use App\Repositories\CustomColumnRepository;
+use App\Repositories\EngineerRepository;
 use App\Services\ActivityLogger;
 
 final class CompanyController
@@ -118,6 +120,277 @@ final class CompanyController
         redirect('/customers');
     }
 
+    /** Columns a compact company table may show; keys match the customer list columns. */
+    public const TABLE_COLUMNS = [
+        'name', 'zone', 'machine_size', 'po_sent_date', 'po_due_date', 'engineer', 'engineer_appointment_1', 'installation_date_1',
+        'engineer_appointment_2', 'installation_date_2', 'engineer_appointment_3', 'installation_date_3', 'due_60_date',
+        'days_early_late', 'status', 'construction_notes', 'work_status', 'cap_notes', 'actions',
+    ];
+
+    public function updateColumns(string $id): void
+    {
+        $this->verifyCsrf();
+        $repository = new CompanyRepository();
+        $company = $repository->find((int) $id);
+        if (!$company) {
+            http_response_code(404);
+            exit('ไม่พบข้อมูลบริษัท');
+        }
+        $selected = $_POST['columns'] ?? [];
+        $selected = is_array($selected) ? array_map('strval', $selected) : [];
+        // Keep the canonical column order; the customer name column is always shown.
+        $columns = array_values(array_filter($this->orderedColumnKeys((int) $id), static fn (string $key): bool => $key === 'name' || in_array($key, $selected, true)));
+        $repository->updateTableColumns((int) $id, $columns);
+        (new ActivityLogger())->log('update', 'company', $id, 'แก้ไขคอลัมน์ตารางบริษัท ' . $company['name'], ['table_columns' => $company['table_columns']], ['table_columns' => $columns]);
+        flash('success', 'บันทึกคอลัมน์ตารางเรียบร้อย');
+        redirect('/customers?company_id=' . (int) $id);
+    }
+
+    public function storeCustomColumn(string $id): void
+    {
+        $this->verifyCsrf();
+        $repository = new CompanyRepository();
+        $company = $repository->find((int) $id);
+        if (!$company) {
+            http_response_code(404);
+            exit('ไม่พบข้อมูลบริษัท');
+        }
+        $customColumns = new CustomColumnRepository();
+        $data = $this->customColumnInput((int) $id, $customColumns);
+        $columnId = $customColumns->create((int) $id, $data);
+
+        // Show the new column straight away.
+        $visible = json_decode((string) ($company['table_columns'] ?? ''), true);
+        if (!is_array($visible) || $visible === []) {
+            $visible = ['name', 'po_sent_date', 'po_due_date', 'engineer'];
+        }
+        $visible[] = 'custom_' . $columnId;
+        $repository->updateTableColumns((int) $id, array_values(array_filter($this->orderedColumnKeys((int) $id), static fn (string $key): bool => in_array($key, $visible, true))));
+
+        (new ActivityLogger())->log('create', 'company_custom_column', (string) $columnId, 'เพิ่มคอลัมน์ ' . $data['label'] . ' ในตารางบริษัท ' . $company['name'], null, $data);
+        flash('success', 'เพิ่มคอลัมน์ ' . $data['label'] . ' เรียบร้อย');
+        redirect('/customers?company_id=' . (int) $id);
+    }
+
+    public function updateCustomColumn(string $id, string $columnId): void
+    {
+        $this->verifyCsrf();
+        $company = (new CompanyRepository())->find((int) $id);
+        if (!$company) {
+            http_response_code(404);
+            exit('ไม่พบข้อมูลบริษัท');
+        }
+        $customColumns = new CustomColumnRepository();
+        $column = $customColumns->find((int) $columnId);
+        if (!$column || (int) $column['company_id'] !== (int) $id) {
+            http_response_code(404);
+            exit('ไม่พบคอลัมน์');
+        }
+        $data = $this->customColumnInput((int) $id, $customColumns, (int) $columnId);
+        if ($data['type'] !== 'date') {
+            foreach ($customColumns->forCompany((int) $id) as $other) {
+                if (in_array('custom_' . $column['id'], [$other['formula_source'], $other['formula_target']], true)) {
+                    flash('error', 'เปลี่ยนประเภทคอลัมน์ไม่ได้ เพราะคอลัมน์ ' . $other['label'] . ' ใช้คอลัมน์นี้ในสูตร');
+                    redirect('/customers?company_id=' . (int) $id);
+                }
+            }
+        }
+        $customColumns->update((int) $columnId, $data);
+        (new ActivityLogger())->log('update', 'company_custom_column', $columnId, 'แก้ไขคอลัมน์ ' . $data['label'] . ' ในตารางบริษัท ' . $company['name'], $column, $data);
+        flash('success', 'บันทึกคอลัมน์ ' . $data['label'] . ' เรียบร้อย');
+        redirect('/customers?company_id=' . (int) $id);
+    }
+
+    /**
+     * Validated custom-column fields from the posted form; flashes and redirects when something is missing.
+     * When editing, $columnId keeps a column from taking itself — or a later column — as its formula source,
+     * so custom columns stay resolvable in id order.
+     */
+    private function customColumnInput(int $companyId, CustomColumnRepository $customColumns, ?int $columnId = null): array
+    {
+        $label = mb_substr(trim((string) ($_POST['label'] ?? '')), 0, 150);
+        $type = in_array($_POST['type'] ?? '', ['date', 'number'], true) ? $_POST['type'] : 'text';
+        if ($label === '') {
+            flash('error', 'กรุณาระบุชื่อคอลัมน์');
+            redirect('/customers?company_id=' . $companyId);
+        }
+        $source = null;
+        $days = null;
+        $target = null;
+        if ($type === 'date' && !empty($_POST['use_formula'])) {
+            $allowed = array_keys(CustomColumnRepository::DATE_SOURCES);
+            foreach ($customColumns->forCompany($companyId) as $existing) {
+                // A column that counts days is a number, so it cannot be one side of another date formula.
+                if ($existing['type'] === 'date' && !CustomColumnRepository::isDifference($existing) && ($columnId === null || (int) $existing['id'] < $columnId)) {
+                    $allowed[] = 'custom_' . $existing['id'];
+                }
+            }
+            $source = (string) ($_POST['formula_source'] ?? '');
+            if (!in_array($source, $allowed, true)) {
+                flash('error', 'กรุณาเลือกคอลัมน์ต้นทางของสูตร');
+                redirect('/customers?company_id=' . $companyId);
+            }
+            if (($_POST['formula_mode'] ?? 'offset') === 'diff') {
+                // Days between two date columns, the way the built-in ช้า/เร็ว column is worked out.
+                $target = (string) ($_POST['formula_target'] ?? '');
+                if (!in_array($target, $allowed, true) || $target === $source) {
+                    flash('error', 'กรุณาเลือกคอลัมน์วันที่อีกช่องที่จะนำมาลบกัน (ต้องไม่ใช่คอลัมน์เดียวกัน)');
+                    redirect('/customers?company_id=' . $companyId);
+                }
+            } else {
+                $days = max(0, min(3650, (int) ($_POST['formula_days'] ?? 0)));
+                if (($_POST['formula_operator'] ?? '+') === '-') {
+                    $days = -$days;
+                }
+            }
+        }
+        $options = [];
+        if ($type === 'text' && !empty($_POST['use_options'])) {
+            foreach (preg_split('/\R/u', (string) ($_POST['options'] ?? '')) as $option) {
+                $option = mb_substr(trim($option), 0, 150);
+                if ($option !== '' && !in_array($option, $options, true)) {
+                    $options[] = $option;
+                }
+            }
+            if ($options === []) {
+                flash('error', 'กรุณาใส่ตัวเลือกของ Dropdown อย่างน้อย 1 รายการ');
+                redirect('/customers?company_id=' . $companyId);
+            }
+        }
+        $kind = CustomColumnRepository::valueKind(['type' => $type, 'formula_source' => $source, 'formula_target' => $target]);
+        $colorRules = !empty($_POST['use_color_rules']) ? $this->colorRulesInput($kind) : [];
+        if ($colorRules !== [] && !$customColumns->supportsColorRules()) {
+            flash('error', 'ยังบันทึกเงื่อนไขสีไม่ได้ เพราะฐานข้อมูลยังไม่มีคอลัมน์ color_rules (ต้องรัน database/company_custom_columns.sql ก่อน) · ส่วนอื่นของคอลัมน์บันทึกแล้ว');
+        }
+        return ['label' => $label, 'type' => $type, 'formula_source' => $source, 'formula_days' => $days, 'formula_target' => $target, 'options' => $options, 'color_rules' => $colorRules];
+    }
+
+    /**
+     * The colour rules posted as rule_op[] / rule_value[] / rule_color[] (the form disables the rows it hides, so
+     * only the shown ones arrive). A condition the column's kind of value cannot use is dropped, and a rule left
+     * without a usable value is skipped with a notice instead of throwing away the whole column form.
+     */
+    private function colorRulesInput(string $kind): array
+    {
+        $ops = is_array($_POST['rule_op'] ?? null) ? $_POST['rule_op'] : [];
+        $values = is_array($_POST['rule_value'] ?? null) ? $_POST['rule_value'] : [];
+        $colors = is_array($_POST['rule_color'] ?? null) ? $_POST['rule_color'] : [];
+        $rules = [];
+        $skipped = [];
+        foreach (array_slice($ops, 0, CustomColumnRepository::MAX_RULES, true) as $index => $op) {
+            $op = is_string($op) ? $op : '';
+            $color = is_string($colors[$index] ?? null) ? $colors[$index] : '';
+            if (!in_array($op, CustomColumnRepository::RULE_OPS_BY_KIND[$kind], true) || !isset(CustomColumnRepository::RULE_COLORS[$color])) {
+                continue;
+            }
+            $value = '';
+            if (!in_array($op, CustomColumnRepository::RULE_OPS_WITHOUT_VALUE, true)) {
+                $value = is_string($values[$index] ?? null) ? mb_substr(trim($values[$index]), 0, 150) : '';
+                if ($value === '' || ($kind === 'number' && !is_numeric($value))) {
+                    $skipped[] = '"' . CustomColumnRepository::RULE_OPS[$op] . '"';
+                    continue;
+                }
+            }
+            $rules[] = ['op' => $op, 'value' => $value, 'color' => $color];
+        }
+        if ($skipped !== []) {
+            flash('error', 'ข้ามเงื่อนไขสี ' . implode(', ', $skipped) . ' เพราะยังไม่ได้กรอกค่า' . ($kind === 'number' ? 'เป็นตัวเลข' : '') . ' · คอลัมน์บันทึกแล้ว กดแก้ไขคอลัมน์เพื่อเพิ่มสีภายหลังได้');
+        }
+        return $rules;
+    }
+
+    public function destroyCustomColumn(string $id, string $columnId): void
+    {
+        $this->verifyCsrf();
+        $customColumns = new CustomColumnRepository();
+        $column = $customColumns->find((int) $columnId);
+        if (!$column || (int) $column['company_id'] !== (int) $id) {
+            http_response_code(404);
+            exit('ไม่พบคอลัมน์');
+        }
+        foreach ($customColumns->forCompany((int) $id) as $other) {
+            if (in_array('custom_' . $column['id'], [$other['formula_source'], $other['formula_target']], true)) {
+                flash('error', 'ลบไม่ได้ เพราะคอลัมน์ ' . $other['label'] . ' ใช้คอลัมน์นี้ในสูตร');
+                redirect('/customers?company_id=' . (int) $id);
+            }
+        }
+        $customColumns->delete((int) $columnId);
+        (new ActivityLogger())->log('delete', 'company_custom_column', $columnId, 'ลบคอลัมน์ ' . $column['label'], $column, null);
+        flash('success', 'ลบคอลัมน์ ' . $column['label'] . ' เรียบร้อย');
+        redirect('/customers?company_id=' . (int) $id);
+    }
+
+    /** Built-in column keys followed by this company's custom columns, with the actions column kept last. */
+    private function orderedColumnKeys(int $companyId): array
+    {
+        $keys = array_values(array_diff(self::TABLE_COLUMNS, ['actions']));
+        foreach ((new CustomColumnRepository())->forCompany($companyId) as $column) {
+            $keys[] = 'custom_' . $column['id'];
+        }
+        $keys[] = 'actions';
+        return $keys;
+    }
+
+    public function updateGroup(string $id): void
+    {
+        $this->verifyCsrf();
+        $groups = new CompanyGroupRepository();
+        $old = $groups->find((int) $id);
+        if (!$old) {
+            http_response_code(404);
+            exit('ไม่พบข้อมูลกลุ่มบริษัท');
+        }
+        $companies = new CompanyRepository();
+        $raw = $_POST['company_ids'] ?? [];
+        $ids = [];
+        foreach (is_array($raw) ? $raw : [$raw] as $companyId) {
+            $companyId = (int) $companyId;
+            if ($companyId > 0 && $companies->find($companyId)) {
+                $ids[] = $companyId;
+            }
+        }
+        $ids = array_values(array_unique($ids));
+        if (count($ids) < 2) {
+            flash('error', 'กลุ่มบริษัทต้องมีอย่างน้อย 2 บริษัท');
+            redirect('/customers?group_id=' . (int) $id);
+        }
+
+        // If another group already holds exactly this set, merge into it instead of keeping a duplicate tab.
+        $sorted = $ids;
+        sort($sorted);
+        foreach ($groups->all() as $group) {
+            $existing = $group['company_ids'];
+            sort($existing);
+            if ((int) $group['id'] !== (int) $id && $existing === $sorted) {
+                $groups->delete((int) $id);
+                (new ActivityLogger())->log('delete', 'company_group', $id, 'รวมกลุ่มบริษัท ' . $old['label'] . ' เข้ากับ ' . $group['label'], $old, $group);
+                flash('success', 'มีกลุ่ม ' . $group['label'] . ' อยู่แล้ว ระบบรวมให้เรียบร้อย');
+                redirect('/customers?group_id=' . (int) $group['id']);
+            }
+        }
+
+        $groups->updateMembers((int) $id, $ids);
+        $new = $groups->find((int) $id);
+        (new ActivityLogger())->log('update', 'company_group', $id, 'แก้ไขกลุ่มบริษัท ' . ($new['label'] ?? ''), $old, $new);
+        flash('success', 'บันทึกกลุ่มบริษัทเรียบร้อย');
+        redirect('/customers?group_id=' . (int) $id);
+    }
+
+    public function destroyGroup(string $id): void
+    {
+        $this->verifyCsrf();
+        $groups = new CompanyGroupRepository();
+        $group = $groups->find((int) $id);
+        if (!$group) {
+            http_response_code(404);
+            exit('ไม่พบข้อมูลกลุ่มบริษัท');
+        }
+        $groups->delete((int) $id);
+        (new ActivityLogger())->log('delete', 'company_group', $id, 'ลบกลุ่มบริษัท ' . $group['label'], $group, null);
+        flash('success', 'ลบกลุ่มบริษัทเรียบร้อย');
+        redirect('/customers');
+    }
+
     private function names(): array
     {
         $raw = $_POST['name'] ?? [];
@@ -143,6 +416,26 @@ final class CompanyController
             'start_year' => preg_match('/^\d{4}$/', $startYear) ? $startYear : null,
             'customer_ids' => $customerIds,
         ];
+    }
+
+    /**
+     * Replace the choices of the built-in "วิศวกร" dropdown, one name per line, the way a custom column's
+     * options are edited. A name customers already hold keeps showing even after being taken off the list.
+     */
+    public function updateEngineers(): void
+    {
+        $this->verifyCsrf();
+        $names = preg_split('/
+||
+/', (string) ($_POST['engineers'] ?? '')) ?: [];
+        $engineers = new EngineerRepository();
+        $before = $engineers->names();
+        $engineers->replaceNames($names);
+        $after = $engineers->names();
+        (new ActivityLogger())->log('update', 'engineer_list', null, 'แก้ไขรายชื่อวิศวกร', ['engineers' => $before], ['engineers' => $after]);
+        flash('success', 'บันทึกรายชื่อวิศวกรเรียบร้อย');
+        $companyId = (int) ($_POST['company_id'] ?? 0);
+        redirect('/customers' . ($companyId > 0 ? '?company_id=' . $companyId : ''));
     }
 
     private function verifyCsrf(): void

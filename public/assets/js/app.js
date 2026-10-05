@@ -95,11 +95,11 @@
 
     document.querySelectorAll('.clickable-row').forEach((row) => {
         const go = () => { window.location.href = row.dataset.href; };
-        row.addEventListener('click', (event) => { if (!event.target.closest('button, a, input, select, textarea')) go(); });
-        row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') go(); });
+        row.addEventListener('click', (event) => { if (!event.target.closest('button, a, input, select, textarea, td[data-editable]')) go(); });
+        row.addEventListener('keydown', (event) => { if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest?.('td[data-editable]')) go(); });
     });
 
-    const trackingFields = ['name','zone','machine_size','po_sent_date','po_due_date','engineer_appointment_1','installation_date_1','engineer_appointment_2','installation_date_2','engineer_appointment_3','installation_date_3','due_60_date','status','work_status','construction_notes','cap_notes'];
+    const trackingFields = ['name','zone','machine_size','po_sent_date','po_due_date','engineer','engineer_appointment_1','installation_date_1','engineer_appointment_2','installation_date_2','engineer_appointment_3','installation_date_3','due_60_date','status','work_status','construction_notes','cap_notes', ...[...document.querySelectorAll('[id^="edit_custom_"]')].map((input) => input.id.slice(5))];
     const draftKey = (id) => `cap_plus_customer_draft_${id}`;
     const readDraft = (id) => {
         try { return JSON.parse(localStorage.getItem(draftKey(id)) || 'null'); } catch { return null; }
@@ -120,8 +120,8 @@
         const sent = document.getElementById('edit_po_sent_date');
         const due = document.getElementById('edit_po_due_date');
         const due60 = document.getElementById('edit_due_60_date');
-        if (!sent || !due || !due60) return;
-        if (!sent.value) { due.value = ''; due60.value = ''; return; }
+        if (!sent || (!due && !due60)) return;
+        if (!sent.value) { if (due) due.value = ''; if (due60) due60.value = ''; return; }
         const date = new Date(`${sent.value}T00:00:00`);
         if (Number.isNaN(date.getTime())) return;
         const firstDue = new Date(date);
@@ -129,8 +129,8 @@
         const secondDue = new Date(date);
         secondDue.setDate(secondDue.getDate() + 60);
         const pad = (value) => String(value).padStart(2, '0');
-        due.value = `${firstDue.getFullYear()}-${pad(firstDue.getMonth() + 1)}-${pad(firstDue.getDate())}`;
-        due60.value = `${secondDue.getFullYear()}-${pad(secondDue.getMonth() + 1)}-${pad(secondDue.getDate())}`;
+        if (due) due.value = `${firstDue.getFullYear()}-${pad(firstDue.getMonth() + 1)}-${pad(firstDue.getDate())}`;
+        if (due60) due60.value = `${secondDue.getFullYear()}-${pad(secondDue.getMonth() + 1)}-${pad(secondDue.getDate())}`;
         calculateDaysEarlyLate();
         saveDraft();
     };
@@ -152,6 +152,47 @@
         const today = new Date(); today.setHours(0, 0, 0, 0);
         const days = Math.round((due - today) / 86400000);
         return days < 0 ? 'danger' : (days <= 7 ? 'warning' : 'secondary');
+    };
+    const daysText = (value) => (value === null || value === undefined || value === ''
+        ? '-'
+        : (Number(value) < 0 ? `ช้า ${Math.abs(Number(value))} วัน` : `เร็ว/เหลือ ${Number(value)} วัน`));
+
+    // Colour rules of the custom columns ({field: [{op, value, color}]}), set on the table by customers/index.php.
+    // The first rule that matches a cell's raw value colours it, like conditional formatting in Excel.
+    const colorRuleMap = (() => {
+        try { return JSON.parse(document.querySelector('.enterprise-table')?.dataset.colorRules || '{}'); } catch { return {}; }
+    })();
+    const ruleColors = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'];
+    const todayIso = () => {
+        const today = new Date();
+        const pad = (number) => String(number).padStart(2, '0');
+        return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    };
+    const ruleMatches = (rule, raw, numeric) => {
+        if (rule.op === 'empty') return raw === '';
+        if (rule.op === 'not_empty') return raw !== '';
+        if (raw === '') return false;
+        switch (rule.op) {
+            case 'lt': return Number(raw) < Number(rule.value);
+            case 'gt': return Number(raw) > Number(rule.value);
+            case 'eq': return numeric ? Number(raw) === Number(rule.value) : raw === rule.value;
+            case 'ne': return numeric ? Number(raw) !== Number(rule.value) : raw !== rule.value;
+            case 'contains': return raw.toLowerCase().includes(String(rule.value).toLowerCase());
+            case 'before_today': return raw.slice(0, 10) < todayIso();
+            case 'from_today': return raw.slice(0, 10) >= todayIso();
+            default: return false;
+        }
+    };
+    const applyColorRules = (scope) => {
+        scope?.querySelectorAll('td[data-field]').forEach((cell) => {
+            const rules = colorRuleMap[cell.dataset.field];
+            const target = cell.querySelector('.data-entry-value, .days-value');
+            if (!rules || !target) return;
+            ruleColors.forEach((color) => target.classList.remove(`cell-rule-${color}`));
+            const numeric = cell.dataset.kind === 'number' || cell.dataset.kind === 'days';
+            const rule = rules.find((item) => ruleMatches(item, (cell.dataset.raw || '').trim(), numeric));
+            if (rule) target.classList.add(`cell-rule-${rule.color}`);
+        });
     };
     document.getElementById('edit_po_sent_date')?.addEventListener('change', calculateDueDates);
     document.getElementById('edit_po_sent_date')?.addEventListener('input', calculateDueDates);
@@ -239,6 +280,35 @@
                     valueElement.textContent = formatter(value);
                     valueElement.classList.toggle('is-empty', !value);
                 };
+                if (row.closest('table')?.dataset.layout === 'compact') {
+                    // Compact tables show a per-company set of columns, so find each cell by its column key.
+                    const dateFields = ['po_sent_date','po_due_date','engineer_appointment_1','installation_date_1','engineer_appointment_2','installation_date_2','engineer_appointment_3','installation_date_3','due_60_date'];
+                    Object.keys(c).forEach((field) => {
+                        const cell = row.querySelector(`.data-entry-${CSS.escape(field)}`);
+                        if (!cell) return;
+                        cell.dataset.raw = c[field] === null || c[field] === undefined ? '' : String(c[field]);
+                        if (cell.dataset.kind === 'days') {
+                            const daysValue = cell.querySelector('.days-value');
+                            if (daysValue) daysValue.textContent = daysText(c[field]);
+                            return;
+                        }
+                        updateDataEntry(cell, c[field], dateFields.includes(field) || cell.dataset.kind === 'date' ? dateText : undefined);
+                    });
+                    // The built-in ช้า/เร็ว cell; custom days columns are refreshed by the loop above.
+                    const days = row.querySelector('td:not([data-kind="days"]) > .days-value');
+                    if (days) days.textContent = daysText(c.days_early_late);
+                    const badge = row.querySelector('.status-badge');
+                    const color = statusColor(c.status, c.due_60_date);
+                    if (badge) {
+                        badge.className = `status-badge status-${color}`;
+                        badge.replaceChildren(document.createElement('span'), document.createTextNode(c.status || 'STATUS'));
+                    }
+                    row.classList.remove('row-success', 'row-danger', 'row-warning', 'row-secondary');
+                    row.classList.add(`row-${color}`);
+                    row.querySelectorAll('td[data-kind="days"] .days-value').forEach((element) => { element.className = `days-value text-${color}`; });
+                    applyColorRules(row);
+                    if (editButton) editButton.dataset.customer = JSON.stringify(c);
+                } else {
                 updateDataEntry(cells[2], c.zone);
                 updateDataEntry(cells[3], c.machine_size);
                 [c.po_sent_date,c.po_due_date,c.engineer_appointment_1,c.installation_date_1,c.engineer_appointment_2,c.installation_date_2,c.engineer_appointment_3,c.installation_date_3,c.due_60_date].forEach((value, index) => updateDataEntry(cells[index + 4], value, dateText));
@@ -255,6 +325,7 @@
                 }
                 [c.construction_notes, c.work_status, c.cap_notes].forEach((value, index) => updateDataEntry(cells[index + 15], value));
                 if (editButton) editButton.dataset.customer = JSON.stringify(c);
+                }
             }
             const notice = document.createElement('div');
             notice.className = 'system-toast';
@@ -403,6 +474,193 @@
         }
     }
 
+
+    // Excel-style editing in the customer table: click a cell to fill it in, Enter or Tab saves and steps to the
+    // next one. A save posts only the field that changed, so the rest of the record is left untouched, and the
+    // response refreshes the whole row because dates and status colours are derived from each other.
+    const customerTable = document.querySelector('.enterprise-table');
+    if (customerTable) {
+        const baseUrl = document.querySelector('meta[name="app-url"]')?.content || '';
+        const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+        const companyId = customerTable.dataset.companyId || '0';
+        const thaiDate = (value) => {
+            if (!value) return '-';
+            const date = new Date(`${value}T00:00:00`);
+            if (Number.isNaN(date.getTime())) return '-';
+            const pad = (number) => String(number).padStart(2, '0');
+            return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear() + 543}`;
+        };
+        const toast = (message, isError) => {
+            const element = document.createElement('div');
+            element.className = `system-toast${isError ? ' system-toast-error' : ''}`;
+            element.setAttribute('role', 'status');
+            element.innerHTML = `<span class="system-toast-icon"><i class="fa-solid fa-${isError ? 'circle-exclamation' : 'check'}"></i></span><span class="system-toast-body"><strong>${isError ? 'บันทึกไม่สำเร็จ' : 'บันทึกแล้ว'}</strong><small></small></span>`;
+            element.querySelector('small').textContent = message;
+            document.body.appendChild(element);
+            window.setTimeout(() => element.remove(), isError ? 5000 : 1800);
+        };
+
+        applyColorRules(customerTable);
+        const editableCells = () => [...customerTable.querySelectorAll('td[data-editable]')];
+        const paint = (cell, raw) => {
+            cell.dataset.raw = raw === null || raw === undefined ? '' : String(raw);
+            const badge = cell.querySelector('.status-badge');
+            if (badge) {
+                badge.replaceChildren(document.createElement('span'), document.createTextNode(cell.dataset.raw || 'STATUS'));
+                return;
+            }
+            const daysValue = cell.dataset.kind === 'days' ? cell.querySelector('.days-value') : null;
+            if (daysValue) {
+                daysValue.textContent = daysText(cell.dataset.raw);
+                applyColorRules(cell.closest('tr'));
+                return;
+            }
+            let value = cell.querySelector('.data-entry-value');
+            if (!value) {
+                value = document.createElement('span');
+                value.className = 'data-entry-value';
+                cell.replaceChildren(value);
+            }
+            value.textContent = cell.dataset.kind === 'date' ? thaiDate(cell.dataset.raw) : (cell.dataset.raw || '-');
+            value.classList.toggle('is-empty', cell.dataset.raw === '');
+            if (cell.dataset.kind === 'number') value.classList.add('data-entry-number');
+            applyColorRules(cell.closest('tr'));
+        };
+        const refreshRow = (row, customer) => {
+            row.querySelectorAll('td[data-field]').forEach((cell) => {
+                if (cell.dataset.editing === '1') return;
+                const field = cell.dataset.field;
+                if (Object.prototype.hasOwnProperty.call(customer, field)) paint(cell, customer[field]);
+            });
+            // The built-in ช้า/เร็ว cell; custom days columns carry data-field and were painted above.
+            const days = row.querySelector('td:not([data-kind="days"]) > .days-value');
+            if (days) days.textContent = daysText(customer.days_early_late);
+            const color = statusColor(customer.status, customer.due_60_date);
+            const badge = row.querySelector('.status-badge');
+            if (badge) badge.className = `status-badge status-${color}`;
+            if (days) days.className = `days-value text-${color}`;
+            row.querySelectorAll('td[data-kind="days"] .days-value').forEach((element) => { element.className = `days-value text-${color}`; });
+            applyColorRules(row);
+            row.classList.remove('row-success', 'row-danger', 'row-warning', 'row-secondary');
+            row.classList.add(`row-${color}`);
+            const modalButton = row.querySelector('.edit-tracking-button');
+            if (modalButton) modalButton.dataset.customer = JSON.stringify(customer);
+        };
+
+        const save = async (cell, value, previous) => {
+            const row = cell.closest('tr');
+            const customerId = row?.dataset.customerId;
+            if (!customerId) return;
+            const body = new FormData();
+            body.append('_token', csrfToken);
+            if (cell.dataset.customId) {
+                body.append('custom_company_id', companyId);
+                body.append(`custom[${cell.dataset.customId}]`, value);
+            } else {
+                body.append(cell.dataset.field, value);
+            }
+            cell.classList.add('is-saving');
+            try {
+                const response = await fetch(`${baseUrl}/customers/${encodeURIComponent(customerId)}`, {
+                    method: 'POST',
+                    body,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+                    credentials: 'same-origin',
+                });
+                const result = await response.json().catch(() => null);
+                if (!response.ok || !result?.success) throw new Error(result?.message || (response.status === 419 ? 'เซสชันหมดอายุ กรุณารีเฟรชหน้า' : 'บันทึกข้อมูลไม่สำเร็จ'));
+                refreshRow(row, result.customer || {});
+                cell.classList.add('is-saved');
+                window.setTimeout(() => cell.classList.remove('is-saved'), 900);
+            } catch (error) {
+                paint(cell, previous);
+                cell.classList.add('is-error');
+                window.setTimeout(() => cell.classList.remove('is-error'), 2500);
+                toast(error.message || 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', true);
+            } finally {
+                cell.classList.remove('is-saving');
+            }
+        };
+
+        let openCell = null;
+        const closeEditor = (commit) => {
+            const cell = openCell;
+            if (!cell) return;
+            const input = cell.querySelector('.data-entry-input');
+            const previous = cell.dataset.raw || '';
+            const value = input ? input.value.trim() : previous;
+            openCell = null;
+            delete cell.dataset.editing;
+            paint(cell, commit ? value : previous);
+            if (commit && value !== previous) save(cell, value, previous);
+        };
+        const openEditor = (cell) => {
+            if (openCell === cell) return;
+            closeEditor(true);
+            const raw = cell.dataset.raw || '';
+            let input;
+            if (cell.dataset.kind === 'select') {
+                input = document.createElement('select');
+                input.className = 'form-select form-select-sm';
+                input.add(new Option('-- ว่าง --', ''));
+                JSON.parse(cell.dataset.options || '[]').forEach((option) => input.add(new Option(option, option)));
+                if (raw && !Array.from(input.options).some((option) => option.value === raw)) input.add(new Option(raw, raw));
+            } else {
+                input = document.createElement('input');
+                input.type = cell.dataset.kind === 'date' ? 'date' : (cell.dataset.kind === 'number' ? 'number' : 'text');
+                input.className = 'form-control form-control-sm';
+                if (input.type === 'number') input.step = 'any'; else input.maxLength = 5000;
+            }
+            input.classList.add('data-entry-input');
+            input.value = raw;
+            openCell = cell;
+            cell.dataset.editing = '1';
+            cell.replaceChildren(input);
+            input.focus();
+            input.select?.();
+
+            input.addEventListener('blur', () => { if (openCell === cell) closeEditor(true); });
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeEditor(false);
+                    cell.focus();
+                    return;
+                }
+                if (event.key !== 'Enter' && event.key !== 'Tab') return;
+                event.preventDefault();
+                const cells = editableCells();
+                const index = cells.indexOf(cell);
+                let next = null;
+                if (event.key === 'Tab') {
+                    next = cells[index + (event.shiftKey ? -1 : 1)] || null;
+                } else {
+                    // Enter steps down the same column, the way a spreadsheet does.
+                    const rows = [...customerTable.querySelectorAll('tbody tr')];
+                    const nextRow = rows[rows.indexOf(cell.closest('tr')) + (event.shiftKey ? -1 : 1)];
+                    next = nextRow?.querySelector(`td[data-editable][data-field="${CSS.escape(cell.dataset.field)}"]`) || null;
+                }
+                closeEditor(true);
+                if (next) openEditor(next); else cell.focus();
+            });
+        };
+
+        customerTable.addEventListener('click', (event) => {
+            const cell = event.target.closest('td[data-editable]');
+            if (!cell || cell.dataset.editing === '1') return;
+            event.stopPropagation();
+            openEditor(cell);
+        });
+        customerTable.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== 'F2') return;
+            const cell = event.target.closest?.('td[data-editable]');
+            if (!cell || cell.dataset.editing === '1' || event.target !== cell) return;
+            event.preventDefault();
+            event.stopPropagation();
+            openEditor(cell);
+        });
+    }
+
     if (document.querySelector('.app-shell')) {
         let replacementHandled = false;
         const checkSessionStatus = async () => {
@@ -424,4 +682,61 @@
         };
         window.setInterval(checkSessionStatus, 5000);
     }
+})();
+
+// Inline required-field validation for forms marked data-validate (Thai message under the field, no browser bubble).
+(() => {
+    'use strict';
+    document.querySelectorAll('form[data-validate]').forEach((form) => {
+        const fields = [...form.querySelectorAll('input, select, textarea')].filter((field) => field.type !== 'hidden' && (field.required || field.dataset.invalidMessage));
+        const isEmpty = (field) => (field.type === 'checkbox' ? !field.checked : field.value.trim() === '');
+        // A required field is a problem when empty; a filled field is a problem when its format is wrong (e.g. an email without "@").
+        const problem = (field) => {
+            if (field.required && isEmpty(field)) return field.dataset.requiredMessage || 'กรุณากรอกข้อมูลในช่องนี้';
+            if (!isEmpty(field) && !field.validity.valid) return field.dataset.invalidMessage || 'รูปแบบข้อมูลไม่ถูกต้อง';
+            return null;
+        };
+        const errorBox = (field) => document.getElementById(`${field.id}Error`);
+        const show = (field, message) => {
+            const box = errorBox(field);
+            field.classList.add('has-error');
+            field.setAttribute('aria-invalid', 'true');
+            if (box) {
+                box.querySelector('span').textContent = message;
+                box.hidden = false;
+            }
+        };
+        const hide = (field) => {
+            const box = errorBox(field);
+            field.classList.remove('has-error');
+            field.removeAttribute('aria-invalid');
+            if (box) box.hidden = true;
+        };
+        form.addEventListener('submit', (event) => {
+            let first = null;
+            fields.forEach((field) => {
+                const message = problem(field);
+                if (message) {
+                    show(field, message);
+                    first = first || field;
+                } else {
+                    hide(field);
+                }
+            });
+            if (!first) return;
+            event.preventDefault();
+            first.focus();
+            const wrapper = first.closest('.input-icon');
+            if (wrapper) {
+                wrapper.classList.remove('shake');
+                void wrapper.offsetWidth;
+                wrapper.classList.add('shake');
+            }
+        });
+        fields.forEach((field) => {
+            const clear = () => { if (field.classList.contains('has-error') && !problem(field)) hide(field); };
+            field.addEventListener('input', clear);
+            field.addEventListener('change', clear);
+        });
+    });
 })();

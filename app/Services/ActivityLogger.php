@@ -12,6 +12,10 @@ final class ActivityLogger
     public function log(string $action, ?string $entityType = null, string|int|null $entityId = null, ?string $description = null, ?array $old = null, ?array $new = null): void
     {
         $sql = 'INSERT INTO activity_logs (user_id, action, entity_type, entity_id, description, old_values, new_values, ip_address, user_agent) VALUES (:user_id, :action, :entity_type, :entity_id, :description, :old_values, :new_values, :ip_address, :user_agent)';
+        $impersonator = Auth::impersonator();
+        if ($impersonator !== null) {
+            $description = trim(($description ?? '') . ' [ทำโดยผู้สร้างระบบ: ' . $impersonator['username'] . ']');
+        }
         $statement = Database::connection()->prepare($sql);
         $statement->execute([
             'user_id' => Auth::id(),

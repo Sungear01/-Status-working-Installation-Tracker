@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Core\Auth;
 use App\Core\Csrf;
 use App\Core\View;
 use App\Repositories\RoleRepository;
@@ -15,6 +16,9 @@ final class AdminRoleController
     {
         $repository = new RoleRepository();
         $roles = $repository->all();
+        if (!Auth::isDeveloper()) {
+            $roles = array_values(array_filter($roles, static fn (array $role): bool => $role['slug'] !== 'developer'));
+        }
         foreach ($roles as &$role) {
             $role['permission_ids'] = $repository->permissionIds((int) $role['id']);
         }

@@ -173,7 +173,11 @@ final class CustomerRepository
             $trackingTable
         );
         $statement = $this->db->prepare($sql);
-        $statement->execute($data + ['id' => $id]);
+        // A worksheet customer's name comes from landyhome, so 'name' has no placeholder here; native prepares
+        // reject any extra parameter, so pass only the ones the statement uses.
+        $params = $data + ['id' => $id];
+        unset($params['name']);
+        $statement->execute($params);
     }
 
     public function create(array $data): string

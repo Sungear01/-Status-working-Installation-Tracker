@@ -19,11 +19,11 @@ final class CompanyRepository
     /** All companies with the ids of the customers assigned to each (as string[]). */
     public function all(): array
     {
-        $sql = "SELECT c.id, c.name, c.start_year, c.is_default,
+        $sql = "SELECT c.id, c.name, c.start_year, c.is_default, c.table_layout, c.table_columns,
                        COALESCE(GROUP_CONCAT(cc.customer_id ORDER BY cc.customer_id), '') AS customer_ids
                 FROM companies c
                 LEFT JOIN customer_companies cc ON cc.company_id = c.id
-                GROUP BY c.id, c.name, c.start_year, c.is_default
+                GROUP BY c.id, c.name, c.start_year, c.is_default, c.table_layout, c.table_columns
                 ORDER BY c.id ASC";
         $rows = $this->db->query($sql)->fetchAll();
         foreach ($rows as &$row) {
@@ -34,14 +34,14 @@ final class CompanyRepository
 
     public function find(int $id): ?array
     {
-        $statement = $this->db->prepare('SELECT id, name, start_year, is_default FROM companies WHERE id = :id');
+        $statement = $this->db->prepare('SELECT id, name, start_year, is_default, table_layout, table_columns FROM companies WHERE id = :id');
         $statement->execute(['id' => $id]);
         return $statement->fetch() ?: null;
     }
 
     public function findByName(string $name): ?array
     {
-        $statement = $this->db->prepare('SELECT id, name, start_year, is_default FROM companies WHERE name = :name');
+        $statement = $this->db->prepare('SELECT id, name, start_year, is_default, table_layout, table_columns FROM companies WHERE name = :name');
         $statement->execute(['name' => $name]);
         return $statement->fetch() ?: null;
     }
@@ -90,6 +90,13 @@ final class CompanyRepository
             'id' => $id,
         ]);
         $this->syncCustomers($id, $data['customer_ids']);
+    }
+
+    /** Save which columns a compact-layout company table shows (column keys, in display order). */
+    public function updateTableColumns(int $id, array $columns): void
+    {
+        $statement = $this->db->prepare('UPDATE companies SET table_columns = :columns WHERE id = :id');
+        $statement->execute(['columns' => json_encode(array_values($columns)), 'id' => $id]);
     }
 
     private function syncCustomers(int $companyId, array $customerIds): void

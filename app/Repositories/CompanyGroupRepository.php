@@ -56,6 +56,30 @@ final class CompanyGroupRepository
         return $groupId;
     }
 
+    /** Replace the group's member companies with exactly this set. */
+    public function updateMembers(int $id, array $companyIds): void
+    {
+        $companyIds = array_values(array_unique(array_map('intval', $companyIds)));
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare('DELETE FROM company_group_members WHERE group_id = :group_id')->execute(['group_id' => $id]);
+            $insert = $this->db->prepare('INSERT INTO company_group_members (group_id, company_id) VALUES (:group_id, :company_id)');
+            foreach ($companyIds as $companyId) {
+                $insert->execute(['group_id' => $id, 'company_id' => $companyId]);
+            }
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            $this->db->rollBack();
+            throw $e;
+        }
+    }
+
+    public function delete(int $id): void
+    {
+        $this->db->prepare('DELETE FROM company_group_members WHERE group_id = :group_id')->execute(['group_id' => $id]);
+        $this->db->prepare('DELETE FROM company_groups WHERE id = :id')->execute(['id' => $id]);
+    }
+
     public function find(int $id): ?array
     {
         foreach ($this->all() as $group) {
