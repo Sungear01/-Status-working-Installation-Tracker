@@ -44,12 +44,28 @@ $actionsLabel = $allColumns['actions'];
 unset($allColumns['actions']);
 $allColumns += array_map(static fn (array $c): string => $c['label'], $customByKey);
 $allColumns['actions'] = $actionsLabel;
+// Names the admin gave the built-in columns of this table replace the defaults (kept for the "reset" comparison).
+$defaultColumnLabels = $allColumns;
+foreach ($columnLabels ?? [] as $labelKey => $labelText) {
+    if (isset($allColumns[$labelKey]) && !isset($customByKey[$labelKey])) {
+        $allColumns[$labelKey] = (string) $labelText;
+        if (isset($columns[$labelKey])) {
+            $columns[$labelKey] = (string) $labelText;
+        }
+    }
+}
 if ($compactTable) {
     $visibleKeys = json_decode((string) ($compactCompany['table_columns'] ?? ''), true);
     if (!is_array($visibleKeys) || $visibleKeys === []) {
         $visibleKeys = ['name', 'po_sent_date', 'po_due_date', 'engineer'];
     }
-    $columns = array_intersect_key($allColumns, array_flip($visibleKeys));
+    // Shown in the order the admin arranged them; the customer name always comes first.
+    $columns = ['name' => $allColumns['name']];
+    foreach ($visibleKeys as $visibleKey) {
+        if (isset($allColumns[$visibleKey])) {
+            $columns[$visibleKey] = $allColumns[$visibleKey];
+        }
+    }
 }
 // The edit modal needs $compactTable and $columns, so it is included once the visible columns are known.
 require base_path('resources/views/customers/_edit_modal.php');
@@ -61,10 +77,9 @@ $daysText = static function ($value): string {
     return $days < 0 ? 'ช้า ' . abs($days) . ' วัน' : 'เร็ว/เหลือ ' . $days . ' วัน';
 };
 ?>
-<div class="page-heading"><div><span class="eyebrow text-primary">CUSTOMER OPERATIONS</span><h2>รายการติดตามงานติดตั้ง</h2><p>พบข้อมูลทั้งหมด <?= number_format($result['total']) ?> รายการ · ชื่อลูกค้าจาก customers และ Zone จาก worksheets</p></div><div class="d-flex gap-2"><?php if (can('create_customer') && !config('customer.master_managed_externally')): ?><button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createCustomer" <?= !config('customer.writes_enabled')?'disabled title="ระบบอยู่ในโหมดอ่านอย่างเดียว"':'' ?>><i class="fa-solid fa-plus me-1"></i>เพิ่มลูกค้า</button><?php endif; ?><?php if (can('export_customer')): ?><a class="btn btn-outline-primary" href="<?= e(url('/customers/export') . $query(['format' => 'csv'])) ?>"><i class="fa-solid fa-file-csv me-1"></i>CSV</a><a class="btn btn-success" href="<?= e(url('/customers/export') . $query(['format' => 'excel'])) ?>"><i class="fa-solid fa-file-excel me-1"></i>Excel</a><?php endif; ?></div></div>
+<div class="page-heading"><div><span class="eyebrow text-primary">CUSTOMER OPERATIONS</span><h2>รายการติดตามงานติดตั้ง</h2><p>พบข้อมูลทั้งหมด <?= number_format($result['total']) ?> รายการ · ชื่อลูกค้าจาก customers และ Zone จาก worksheets</p></div><div class="d-flex gap-2"><?php if (can('export_customer')): ?><a class="btn btn-outline-primary" href="<?= e(url('/customers/export') . $query(['format' => 'csv'])) ?>"><i class="fa-solid fa-file-csv me-1"></i>CSV</a><a class="btn btn-success" href="<?= e(url('/customers/export') . $query(['format' => 'excel'])) ?>"><i class="fa-solid fa-file-excel me-1"></i>Excel</a><?php endif; ?></div></div>
 <section class="panel mb-4 company-tabs">
     <div class="d-flex align-items-center gap-2 flex-wrap">
-        <?php if (empty($restrictedToCompany)): ?><a href="<?= e(url('/customers') . $query(['company_id' => null, 'group_id' => null, 'page' => 1])) ?>" class="btn btn-sm <?= ($filters['company_id'] ?? '') === '' && ($filters['group_id'] ?? '') === '' ? 'btn-primary' : 'btn-outline-primary' ?>">ทั้งหมด</a><?php endif; ?>
         <?php foreach ($companies as $company): ?>
             <div class="btn-group btn-group-sm" role="group">
                 <a href="<?= e(url('/customers') . $query(['company_id' => $company['id'], 'group_id' => null, 'page' => 1])) ?>" class="btn <?= ($filters['group_id'] ?? '') === '' && (string) ($filters['company_id'] ?? '') === (string) $company['id'] ? 'btn-primary' : 'btn-outline-primary' ?>"><?= e($company['name']) ?></a>
@@ -99,14 +114,29 @@ $daysText = static function ($value): string {
                             <small class="text-secondary">เลือกบริษัทที่มีอยู่ หรือพิมพ์ชื่อใหม่แล้วกด Enter เพื่อเพิ่ม (เลือก/เพิ่มได้มากกว่า 1 บริษัท)</small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">ปีที่เริ่มดำเนินงาน</label>
+                            <?php
+                            // Contract-signing year (พ.ศ.) of each picker customer, from Landy Home projects.sign_contract_date.
+                            $signYears = [];
+                            foreach ($customerOptions as $index => $option) {
+                                $customerOptions[$index]['sign_year'] = $option['contract_sign_date'] ? (string) ((int) date('Y', strtotime((string) $option['contract_sign_date'])) + 543) : '';
+                                $signYears[$customerOptions[$index]['sign_year']] = true;
+                            }
+                            // The years found in the data, plus the recent ones so a year saved on a company can still be shown.
+                            $currentBuddhistYear = (int) date('Y') + 543;
+                            for ($year = $currentBuddhistYear + 1; $year >= $currentBuddhistYear - 15; $year--) {
+                                $signYears[(string) $year] = true;
+                            }
+                            unset($signYears['']);
+                            krsort($signYears);
+                            ?>
+                            <label class="form-label">ปีที่เซ็นสัญญา</label>
                             <select class="form-select" name="start_year" id="companyStartYear">
-                                <option value="">-- เลือกปี --</option>
-                                <?php $currentBuddhistYear = (int) date('Y') + 543; for ($year = $currentBuddhistYear + 1; $year >= $currentBuddhistYear - 15; $year--): ?>
-                                    <option value="<?= $year ?>"><?= $year ?></option>
-                                <?php endfor; ?>
+                                <option value="">-- ทุกปี --</option>
+                                <?php foreach (array_keys($signYears) as $year): ?>
+                                    <option value="<?= e((string) $year) ?>"><?= e((string) $year) ?></option>
+                                <?php endforeach; ?>
                             </select>
-                            <small class="text-secondary">เลือกปีเพื่อติ๊กลูกค้าที่เซ็นสัญญาปีนั้นให้อัตโนมัติ (หรือระบบจะเติมปีให้เองเมื่อติ๊กลูกค้าด้านล่าง)</small>
+                            <small class="text-secondary">เลือกปีเพื่อแสดงเฉพาะลูกค้าที่เซ็นสัญญาปีนั้น ไม่เลือกปีจะแสดงลูกค้าทั้งหมดจาก Landy Home</small>
                         </div>
                         <div class="col-12">
                             <label class="form-label">ลูกค้าเพิ่มเติมในบริษัทนี้</label>
@@ -116,13 +146,20 @@ $daysText = static function ($value): string {
                                 <button type="button" class="btn btn-outline-secondary text-nowrap" id="clearAllCustomers">ล้างทั้งหมด</button>
                             </div>
                             <div class="border rounded p-2" style="max-height:260px;overflow-y:auto" id="companyCustomerList">
-                                <?php foreach ($customerOptions as $option): $signYear = $option['contract_sign_date'] ? ((int) date('Y', strtotime((string) $option['contract_sign_date'])) + 543) : ''; ?>
-                                    <div class="form-check company-customer-option" data-name="<?= e(mb_strtolower((string) $option['name'])) ?>">
-                                        <input class="form-check-input" type="checkbox" value="<?= e($option['id']) ?>" id="cc_<?= e($option['id']) ?>" data-po-year="<?= e((string) $signYear) ?>">
-                                        <label class="form-check-label" for="cc_<?= e($option['id']) ?>"><?= e($option['name']) ?></label>
+                                <?php foreach ($customerOptions as $option): ?>
+                                    <div class="form-check company-customer-option" data-name="<?= e(mb_strtolower((string) $option['name'])) ?>" data-sign-year="<?= e($option['sign_year']) ?>">
+                                        <input class="form-check-input" type="checkbox" value="<?= e($option['id']) ?>" id="cc_<?= e($option['id']) ?>" data-count="0">
+                                        <label class="form-check-label" for="cc_<?= e($option['id']) ?>"><?= e($option['name']) ?><?php if ($option['sign_year'] !== ''): ?> <small class="text-secondary">(เซ็นสัญญา <?= e($option['sign_year']) ?>)</small><?php endif; ?></label>
+                                        <span class="customer-qty">
+                                            <span class="badge text-bg-primary customer-qty-badge d-none" title="จำนวนแถวของลูกค้ารายนี้ในตารางบริษัท"></span>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary customer-qty-btn d-none" data-qty="-1" title="ลดลง 1 แถว" aria-label="ลดแถวของ <?= e($option['name']) ?> ลง 1 แถว"><i class="fa-solid fa-minus"></i></button>
+                                            <button type="button" class="btn btn-sm btn-outline-primary customer-qty-btn" data-qty="1" title="เพิ่มรายชื่อนี้อีก 1 แถว (เช่น 2 เครื่อง / 2 อาคาร)" aria-label="เพิ่ม <?= e($option['name']) ?> อีก 1 แถว"><i class="fa-solid fa-plus"></i></button>
+                                        </span>
                                     </div>
                                 <?php endforeach; ?>
+                                <div class="text-secondary small p-1 d-none" id="companyCustomerEmpty">ไม่พบลูกค้าตามปีหรือคำค้นที่เลือก</div>
                             </div>
+                            <small class="text-secondary" id="companyCustomerCount"></small>
                             <input type="hidden" name="customer_ids" id="companyCustomerIdsHidden">
                         </div>
                     </div>
@@ -234,11 +271,40 @@ $daysText = static function ($value): string {
 
     // Hundreds of individual customer_ids[] fields can exceed PHP's max_input_vars
     // and get silently truncated, so the checked ids are collected into one field instead.
+    // A customer added N times (the + button) is sent N times, e.g. "934,934", and saved as N rows.
     function syncCustomerIdsHidden() {
         var ids = [];
-        checkboxes.forEach(function (box) { if (box.checked) ids.push(box.value); });
+        checkboxes.forEach(function (box) {
+            if (!box.checked) return;
+            for (var i = 0; i < Math.max(1, Number(box.dataset.count) || 0); i++) ids.push(box.value);
+        });
         customerIdsHidden.value = ids.join(',');
     }
+
+    // How many rows a customer gets in this company's table: 0 = not ticked, 1 = ticked, 2+ = added again with +.
+    // The ×N badge and the − button only show from 2 rows, so a plain tick looks exactly as before.
+    var MAX_ROWS = 10;
+    function setCount(box, count) {
+        count = Math.max(0, Math.min(MAX_ROWS, count));
+        box.dataset.count = String(count);
+        box.checked = count > 0;
+        var row = box.closest('.company-customer-option');
+        var badge = row.querySelector('.customer-qty-badge');
+        var minus = row.querySelector('[data-qty="-1"]');
+        var plus = row.querySelector('[data-qty="1"]');
+        badge.textContent = '×' + count;
+        badge.classList.toggle('d-none', count < 2);
+        minus.classList.toggle('d-none', count < 2);
+        plus.disabled = count >= MAX_ROWS;
+        row.classList.toggle('has-extra-rows', count > 1);
+    }
+    document.getElementById('companyCustomerList').addEventListener('click', function (event) {
+        var button = event.target.closest('.customer-qty-btn');
+        if (!button) return;
+        var box = button.closest('.company-customer-option').querySelector('input[type="checkbox"]');
+        setCount(box, (Number(box.dataset.count) || 0) + Number(button.dataset.qty));
+        updateCount();
+    });
     form.addEventListener('submit', syncCustomerIdsHidden);
 
     function resetForm() {
@@ -247,7 +313,7 @@ $daysText = static function ($value): string {
         title.textContent = 'เพิ่มบริษัท';
         nameSelect.clear();
         nameSelect.settings.maxItems = null;
-        checkboxes.forEach(function (box) { box.checked = false; });
+        checkboxes.forEach(function (box) { setCount(box, 0); });
         if (search) search.value = '';
         deleteForm.classList.add('d-none');
         filterCustomerList();
@@ -268,11 +334,10 @@ $daysText = static function ($value): string {
         }
         nameSelect.setValue([company.name || '']);
         startYear.value = company.start_year || '';
-        var ids = (company.customer_ids || []).map(String);
-        checkboxes.forEach(function (box) {
-            box.checked = ids.indexOf(box.value) !== -1;
-        });
-        selectCustomersByYear();
+        // customer_ids lists a customer once per row, so a customer saved twice comes back as ×2.
+        var counts = {};
+        (company.customer_ids || []).map(String).forEach(function (id) { counts[id] = (counts[id] || 0) + 1; });
+        checkboxes.forEach(function (box) { setCount(box, counts[box.value] || 0); });
         filterCustomerList();
         if (Number(company.is_default) !== 1) {
             deleteForm.action = baseAction + '/' + company.id + '/delete';
@@ -281,22 +346,46 @@ $daysText = static function ($value): string {
         new bootstrap.Modal(modalEl).show();
     }
 
+    // Shows only the customers matching the search text and the picked contract-signing year (no year = every year).
+    // Hidden customers keep their tick, so they are still saved with the company.
+    var emptyNote = document.getElementById('companyCustomerEmpty');
+    var countNote = document.getElementById('companyCustomerCount');
     function filterCustomerList() {
         var term = (search.value || '').trim().toLowerCase();
+        var year = startYear.value;
+        var shown = 0;
         document.querySelectorAll('.company-customer-option').forEach(function (row) {
-            row.style.display = !term || row.dataset.name.indexOf(term) !== -1 ? '' : 'none';
+            var visible = (!term || row.dataset.name.indexOf(term) !== -1) && (!year || row.dataset.signYear === year);
+            row.style.display = visible ? '' : 'none';
+            if (visible) shown++;
         });
+        if (emptyNote) emptyNote.classList.toggle('d-none', shown > 0);
+        updateCount();
     }
 
-    // Picking a year here bulk-checks every customer whose contract was signed that year,
-    // so the admin doesn't have to search each name one by one.
-    function selectCustomersByYear() {
+    // "แสดง N รายชื่อ ... · เลือกไว้ M ราย": M counts every ticked customer, hidden ones (other years) included.
+    function updateCount() {
+        if (!countNote) return;
         var year = startYear.value;
-        if (!year) return;
-        checkboxes.forEach(function (box) {
-            if (box.dataset.poYear === year) box.checked = true;
+        var shown = 0, checked = 0, rows = 0;
+        document.querySelectorAll('.company-customer-option').forEach(function (row) {
+            if (row.style.display !== 'none') shown++;
         });
+        checkboxes.forEach(function (box) {
+            if (!box.checked) return;
+            checked++;
+            rows += Math.max(1, Number(box.dataset.count) || 0);
+        });
+        countNote.textContent = 'แสดง ' + shown.toLocaleString() + ' รายชื่อ' + (year ? ' ที่เซ็นสัญญาปี ' + year : ' (ทุกปี)')
+            + ' · เลือกไว้ ' + checked.toLocaleString() + ' ราย' + (rows > checked ? ' (' + rows.toLocaleString() + ' แถวในตาราง)' : '');
     }
+    // Ticking = 1 row; unticking drops every row of that customer.
+    checkboxes.forEach(function (box) {
+        box.addEventListener('change', function () {
+            setCount(box, box.checked ? Math.max(1, Number(box.dataset.count) || 0) : 0);
+            updateCount();
+        });
+    });
 
     var addBtn = document.getElementById('addCompanyBtn');
     if (addBtn) addBtn.addEventListener('click', openForCreate);
@@ -306,17 +395,23 @@ $daysText = static function ($value): string {
         });
     });
     if (search) search.addEventListener('input', filterCustomerList);
-    startYear.addEventListener('change', selectCustomersByYear);
+    startYear.addEventListener('change', filterCustomerList);
 
     var selectAllBtn = document.getElementById('selectAllCustomers');
     var clearAllBtn = document.getElementById('clearAllCustomers');
     if (selectAllBtn) selectAllBtn.addEventListener('click', function () {
         document.querySelectorAll('.company-customer-option').forEach(function (row) {
-            if (row.style.display !== 'none') row.querySelector('input[type="checkbox"]').checked = true;
+            var box = row.querySelector('input[type="checkbox"]');
+            if (row.style.display !== 'none' && !box.checked) setCount(box, 1);
         });
+        updateCount();
     });
+    // Like "เลือกทั้งหมด", only the customers currently shown: clearing year 2569 keeps the ticks of other years.
     if (clearAllBtn) clearAllBtn.addEventListener('click', function () {
-        checkboxes.forEach(function (box) { box.checked = false; });
+        document.querySelectorAll('.company-customer-option').forEach(function (row) {
+            if (row.style.display !== 'none') setCount(row.querySelector('input[type="checkbox"]'), 0);
+        });
+        updateCount();
     });
 
     form.addEventListener('submit', function (event) {
@@ -404,15 +499,34 @@ $daysText = static function ($value): string {
         <div class="modal-content">
             <div class="modal-header"><h2 class="modal-title fs-5">คอลัมน์ตาราง <?= e($compactCompany['name']) ?></h2><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">
-                <h3 class="fs-6 mb-2"><i class="fa-solid fa-user-gear me-1"></i>รายชื่อวิศวกร</h3>
-                <form method="post" action="<?= e(url('/engineers')) ?>" class="mb-4">
+                <?php $hiddenColumns = array_diff_key($allColumns, $columns); ?>
+                <form method="post" action="<?= e(url($companyBase . '/columns')) ?>" id="tableColumnsForm" class="mb-4">
                     <?= csrf_field() ?>
-                    <input type="hidden" name="company_id" value="<?= (int) $compactCompany['id'] ?>">
-                    <label class="form-label" for="engineerList">ตัวเลือกของคอลัมน์ "วิศวกร" (บรรทัดละ 1 ชื่อ)</label>
-                    <textarea class="form-control" id="engineerList" name="engineers" rows="6" placeholder="เช่น&#10;สมชาย ใจดี&#10;สมหญิง รักงาน"><?= e(implode("
-", $engineerOptions ?? [])) ?></textarea>
-                    <small class="text-secondary">ใช้ร่วมกันทุกบริษัท · ชื่อที่ลูกค้าเลือกไว้แล้วจะยังคงแสดงอยู่ แม้จะถูกนำออกจากรายการนี้</small>
-                    <div class="text-end mt-2"><button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-1"></i>บันทึกรายชื่อวิศวกร</button></div>
+                    <h3 class="fs-6 mb-1"><i class="fa-solid fa-list-ol me-1"></i>คอลัมน์ในตาราง</h3>
+                    <p class="text-secondary small mb-2">ลาก <i class="fa-solid fa-grip-vertical"></i> ไปวางตำแหน่งที่ต้องการ หรือกด <i class="fa-solid fa-arrow-up"></i> <i class="fa-solid fa-arrow-down"></i> เพื่อเลื่อนทีละช่อง · คลิกที่ชื่อเพื่อ<strong>เปลี่ยนชื่อหัวคอลัมน์</strong> (ลบให้ว่าง = กลับเป็นชื่อเดิม) · <i class="fa-solid fa-pen-to-square"></i> ตั้งค่าคอลัมน์ที่สร้างเอง · <i class="fa-solid fa-xmark"></i> เอาออกจากตาราง (ข้อมูลไม่หาย เพิ่มกลับได้) · แล้วกดบันทึกลำดับ</p>
+                    <ul class="column-order-list" id="columnOrderList">
+                        <li class="column-order-item is-fixed"><span class="column-order-grip"><i class="fa-solid fa-lock"></i></span><input class="form-control form-control-sm column-order-input" name="labels[name]" value="<?= e($allColumns['name']) ?>" placeholder="<?= e($defaultColumnLabels['name']) ?>" maxlength="150" aria-label="ชื่อหัวคอลัมน์"><input type="hidden" name="default_labels[name]" value="<?= e($defaultColumnLabels['name']) ?>"><small class="text-secondary ms-auto text-nowrap">อยู่แรกเสมอ</small></li>
+                        <?php foreach ($columns as $key => $label): if ($key === 'name') continue; $customId = isset($customByKey[$key]) ? (int) $customByKey[$key]['id'] : null; ?>
+                            <li class="column-order-item" data-key="<?= e($key) ?>">
+                                <input type="hidden" name="columns[]" value="<?= e($key) ?>">
+                                <span class="column-order-grip"><i class="fa-solid fa-grip-vertical"></i></span>
+                                <input class="form-control form-control-sm column-order-input" name="labels[<?= e($key) ?>]" value="<?= e($label) ?>" placeholder="<?= e($defaultColumnLabels[$key] ?? $label) ?>" maxlength="150" aria-label="ชื่อหัวคอลัมน์"><input type="hidden" name="default_labels[<?= e($key) ?>]" value="<?= e($defaultColumnLabels[$key] ?? $label) ?>"><?php if ($customId !== null): ?><span class="badge text-bg-light border">สร้างเอง</span><?php endif; ?>
+                                <span class="column-order-actions">
+                                    <button type="button" class="btn btn-sm btn-light" data-column-move="up" title="เลื่อนขึ้น"><i class="fa-solid fa-arrow-up"></i></button>
+                                    <button type="button" class="btn btn-sm btn-light" data-column-move="down" title="เลื่อนลง"><i class="fa-solid fa-arrow-down"></i></button>
+                                    <?php if ($customId !== null): ?><button type="button" class="btn btn-sm btn-outline-primary" data-column-edit="editColumn<?= $customId ?>" title="แก้ไขคอลัมน์ <?= e($label) ?>"><i class="fa-solid fa-pen-to-square"></i></button><?php endif; ?>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" data-column-remove title="เอาออกจากตาราง"><i class="fa-solid fa-xmark"></i></button>
+                                </span>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                    <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                        <select class="form-select w-auto" id="columnAddSelect" aria-label="เพิ่มคอลัมน์กลับเข้าตาราง">
+                            <option value="">+ เพิ่มคอลัมน์เข้าตาราง...</option>
+                            <?php foreach ($hiddenColumns as $key => $label): ?><option value="<?= e($key) ?>" data-custom="<?= isset($customByKey[$key]) ? (int) $customByKey[$key]['id'] : '' ?>" data-default="<?= e($defaultColumnLabels[$key] ?? $label) ?>"><?= e($label) ?></option><?php endforeach; ?>
+                        </select>
+                        <button class="btn btn-primary ms-auto" type="submit"><i class="fa-solid fa-floppy-disk me-1"></i>บันทึกลำดับคอลัมน์</button>
+                    </div>
                 </form>
                 <hr>
                 <?php if ($customColumns): ?>
@@ -530,6 +644,130 @@ $daysText = static function ($value): string {
         </div>
     </div>
 </div>
+<script>
+// Column order list: arrows move a column, × takes it out of the table (back into the "add" dropdown), the dropdown
+// puts one back at the end, and ✎ opens that custom column's edit form below. Nothing is saved until "บันทึกลำดับ".
+(function () {
+    var list = document.getElementById('columnOrderList');
+    var addSelect = document.getElementById('columnAddSelect');
+    var form = document.getElementById('tableColumnsForm');
+    if (!list || !addSelect || !form) return;
+    var saveButton = form.querySelector('button[type="submit"]');
+    var markDirty = function () {
+        saveButton.classList.remove('btn-primary');
+        saveButton.classList.add('btn-warning');
+        saveButton.innerHTML = '<i class="fa-solid fa-floppy-disk me-1"></i>บันทึกลำดับคอลัมน์ (ยังไม่ได้บันทึก)';
+    };
+    var button = function (icon, title, attr, extraClass) {
+        var element = document.createElement('button');
+        element.type = 'button';
+        element.className = 'btn btn-sm ' + (extraClass || 'btn-light');
+        element.title = title;
+        element.setAttribute(attr[0], attr[1]);
+        element.innerHTML = '<i class="fa-solid ' + icon + '"></i>';
+        return element;
+    };
+    var makeItem = function (key, label, customId, defaultLabel) {
+        var item = document.createElement('li');
+        item.className = 'column-order-item';
+        item.dataset.key = key;
+        var input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'columns[]'; input.value = key;
+        var grip = document.createElement('span');
+        grip.className = 'column-order-grip';
+        grip.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
+        var text = document.createElement('input');
+        text.className = 'form-control form-control-sm column-order-input';
+        text.name = 'labels[' + key + ']'; text.value = label; text.placeholder = defaultLabel || label; text.maxLength = 150;
+        text.setAttribute('aria-label', 'ชื่อหัวคอลัมน์');
+        var defaultInput = document.createElement('input');
+        defaultInput.type = 'hidden'; defaultInput.name = 'default_labels[' + key + ']'; defaultInput.value = defaultLabel || label;
+        var actions = document.createElement('span');
+        actions.className = 'column-order-actions';
+        actions.append(button('fa-arrow-up', 'เลื่อนขึ้น', ['data-column-move', 'up']), button('fa-arrow-down', 'เลื่อนลง', ['data-column-move', 'down']));
+        if (customId) actions.append(button('fa-pen-to-square', 'แก้ไขคอลัมน์ ' + label, ['data-column-edit', 'editColumn' + customId], 'btn-outline-primary'));
+        actions.append(button('fa-xmark', 'เอาออกจากตาราง', ['data-column-remove', ''], 'btn-outline-danger'));
+        item.append(input, grip, text, defaultInput, actions);
+        return item;
+    };
+    list.addEventListener('click', function (event) {
+        var target = event.target.closest('button');
+        if (!target) return;
+        var item = target.closest('.column-order-item');
+        if (target.dataset.columnMove === 'up') {
+            var previous = item.previousElementSibling;
+            if (previous && !previous.classList.contains('is-fixed')) { list.insertBefore(item, previous); markDirty(); }
+        } else if (target.dataset.columnMove === 'down') {
+            var next = item.nextElementSibling;
+            if (next) { list.insertBefore(next, item); markDirty(); }
+        } else if (target.hasAttribute('data-column-remove')) {
+            var editButton = item.querySelector('[data-column-edit]');
+            var labelInput = item.querySelector('.column-order-input');
+            var option = new Option(labelInput.value.trim() || labelInput.placeholder, item.dataset.key);
+            option.dataset.default = item.querySelector('input[name^="default_labels"]').value;
+            option.dataset.custom = editButton ? editButton.dataset.columnEdit.replace('editColumn', '') : '';
+            addSelect.add(option);
+            item.remove();
+            markDirty();
+        } else if (target.dataset.columnEdit) {
+            var panel = document.getElementById(target.dataset.columnEdit);
+            if (panel && window.bootstrap) {
+                bootstrap.Collapse.getOrCreateInstance(panel).show();
+                panel.closest('.list-group-item').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+        target.focus();
+    });
+    list.addEventListener('input', markDirty);
+
+    // Drag a column by its ⋮⋮ handle straight to any position (mouse or touch). The list reorders live while
+    // dragging; the fixed first row (รายชื่อลูกค้า) never moves and nothing can be dropped above it.
+    var dragging = null;
+    list.addEventListener('pointerdown', function (event) {
+        var grip = event.target.closest('.column-order-grip');
+        var item = grip && grip.closest('.column-order-item');
+        if (!item || item.classList.contains('is-fixed') || event.button > 0) return;
+        event.preventDefault();
+        dragging = item;
+        item.classList.add('is-dragging');
+        list.classList.add('is-sorting');
+        grip.setPointerCapture(event.pointerId);
+    });
+    list.addEventListener('pointermove', function (event) {
+        if (!dragging) return;
+        var items = Array.prototype.filter.call(list.children, function (row) {
+            return row !== dragging && !row.classList.contains('is-fixed');
+        });
+        // Drop before the first row whose middle is below the pointer; past every middle = the end of the list.
+        var before = null;
+        for (var i = 0; i < items.length; i++) {
+            var box = items[i].getBoundingClientRect();
+            if (event.clientY < box.top + box.height / 2) { before = items[i]; break; }
+        }
+        if (before ? dragging.nextElementSibling !== before : list.lastElementChild !== dragging) {
+            list.insertBefore(dragging, before);
+            markDirty();
+        }
+    });
+    var endDrag = function () {
+        if (!dragging) return;
+        dragging.classList.remove('is-dragging');
+        list.classList.remove('is-sorting');
+        dragging = null;
+    };
+    list.addEventListener('pointerup', endDrag);
+    list.addEventListener('pointercancel', endDrag);
+
+    addSelect.addEventListener('change', function () {
+        var option = addSelect.selectedOptions[0];
+        if (!option || !option.value) return;
+        list.append(makeItem(option.value, option.textContent, option.dataset.custom, option.dataset.default));
+        option.remove();
+        addSelect.value = '';
+        markDirty();
+    });
+})();
+</script>
 <?php foreach ($customColumns as $custom): ?>
 <form method="post" id="deleteCustomColumn<?= (int) $custom['id'] ?>" action="<?= e(url($companyBase . '/custom-columns/' . (int) $custom['id'] . '/delete')) ?>" class="d-none" data-confirm="ยืนยันการลบคอลัมน์ <?= e($custom['label']) ?>?" data-confirm-detail="ข้อมูลที่กรอกในคอลัมน์นี้ของลูกค้าทุกรายจะถูกลบ และไม่สามารถกู้คืนได้"><?= csrf_field() ?></form>
 <?php endforeach; ?>
@@ -634,7 +872,7 @@ document.querySelectorAll('[data-column-form]').forEach(function (form) {
             // Custom columns have no per-field colour, so each one gets a tone from its position: neighbours never share one.
             $customTones = array_flip(array_map(static fn (array $c): int => (int) $c['id'], $customColumns));
             $dataCell = static function (string $field, ?string $raw, string $display, string $kind = 'text', array $options = [], ?int $customId = null, bool $editable = true) use ($customTones): string {
-                $editable = $editable && ($customId !== null ? can('edit_customer') : App\Core\Auth::canEditCustomerField($field));
+                $editable = $editable && App\Core\Auth::canEditCustomerField($customId !== null ? 'custom_' . $customId : $field);
                 $tone = $customId !== null ? ' custom-tone-' . (($customTones[$customId] ?? $customId) % 6) : '';
                 $html = '<td class="data-entry-cell data-entry-' . e($field) . $tone . '" data-field="' . e($field) . '" data-kind="' . e($kind) . '" data-raw="' . e((string) $raw) . '"';
                 if ($options !== []) {
@@ -663,10 +901,11 @@ document.querySelectorAll('[data-column-form]').forEach(function (form) {
                 return $html . '><span class="status-badge status-' . e($color) . '"><span></span>' . e($row['status'] ?: 'STATUS') . '</span></td>';
             };
             ?>
+            <?php $canOpenDetail = App\Core\Auth::isSuperRole(App\Core\Auth::user()['role_slug'] ?? null); // only administrators open the detail page ?>
             <?php foreach ($result['items'] as $index => $row): $color = status_class((string) $row['status'], $row['due_60_date']); ?>
-                <tr class="clickable-row row-<?= e($color) ?>" data-href="<?= e(url('/customers/' . rawurlencode((string) $row['id']))) ?>" data-customer-id="<?= e((string) $row['id']) ?>" tabindex="0" aria-label="ดูรายละเอียด <?= e($row['name']) ?>">
-                    <td class="text-center text-secondary"><?= number_format($result['total'] - (($result['page'] - 1) * $result['per_page'] + $index)) ?></td>
-                    <td><div class="d-flex align-items-center justify-content-between gap-3"><strong class="customer-name"><?= e($row['name']) ?></strong><?php if(can('edit_customer')): ?><button type="button" class="btn btn-sm btn-outline-primary edit-tracking-button" data-customer="<?= e(json_encode($row, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)) ?>" data-bs-toggle="modal" data-bs-target="#editTrackingModal" title="กรอกหรือแก้ไขข้อมูล"><i class="fa-solid fa-pen-to-square"></i></button><?php endif; ?></div></td>
+                <?php if ($canOpenDetail): ?><tr class="clickable-row row-<?= e($color) ?>" data-href="<?= e(url('/customers/' . rawurlencode((string) $row['id'])) . (!empty($row['assignment_id']) ? '?assignment=' . (int) $row['assignment_id'] : '')) ?>" data-customer-id="<?= e((string) $row['id']) ?>" tabindex="0" aria-label="ดูรายละเอียด <?= e($row['name']) ?>"><?php else: ?><tr class="row-<?= e($color) ?>" data-customer-id="<?= e((string) $row['id']) ?>"><?php endif; ?>
+                    <td class="text-center text-secondary"><?= number_format(($result['page'] - 1) * $result['per_page'] + $index + 1) ?></td>
+                    <td><strong class="customer-name"><?= e($row['name']) ?></strong></td>
                     <?php if ($compactTable): ?>
                     <?php foreach (array_keys($columns) as $field): if ($field === 'name') continue; ?>
                         <?php if ($field === 'days_early_late'): ?><td><span class="days-value text-<?= e($color) ?>"><?= e($daysText($row['days_early_late'])) ?></span></td>

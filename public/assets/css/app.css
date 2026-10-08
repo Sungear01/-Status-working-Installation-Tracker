@@ -57,3 +57,130 @@
 @keyframes fieldErrorIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 @keyframes fieldShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-6px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
 @media (prefers-reduced-motion:reduce){.field-error,.input-icon.shake{animation:none}}
+
+/* Edit-tracking form: which fields to fill in, which are calculated, which are locked */
+.field-legend{margin-bottom:14px;padding:10px 14px;border-radius:10px;background:#EEF5FF;color:#1E3A5F;font-size:.85rem;line-height:1.9}
+.field-req{margin-left:3px;color:#DC2626;font-weight:700}
+.field-tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:.7rem;font-weight:600;vertical-align:middle}
+.field-tag-auto{background:#E0ECFF;color:#1D4ED8}
+.field-tag-lock{background:#E5E7EB;color:#4B5563}
+.field-legend .field-tag{margin-left:0}
+#editTrackingForm .form-control:disabled,#editTrackingForm .form-select:disabled,#editTrackingForm .form-control[readonly]{background-color:#F1F3F5;color:#6B7280;cursor:not-allowed}
+
+/* Empty editable cells: an obvious "fill me in" chip instead of a faint dash (colour-rule cells keep their colour) */
+.enterprise-table td[data-editable] .data-entry-value.is-empty:not([class*="cell-rule-"]){display:inline-flex;align-items:center;justify-content:center;min-width:78px;padding:4px 12px;border-radius:999px;font-size:0!important;background:#FFF4D6!important;border:2px dashed #F59E0B!important;color:#B45309!important;cursor:pointer;transition:background .15s,box-shadow .15s,transform .15s}
+.enterprise-table td[data-editable] .data-entry-value.is-empty:not([class*="cell-rule-"])::before{content:"✎ กรอกข้อมูล";font-size:.74rem;font-weight:700;line-height:1.4;white-space:nowrap}
+.enterprise-table td[data-editable]:hover .data-entry-value.is-empty:not([class*="cell-rule-"]),.enterprise-table td[data-editable]:focus-visible .data-entry-value.is-empty:not([class*="cell-rule-"]){background:#FDE68A!important;border-style:solid!important;box-shadow:0 0 0 4px rgba(245,158,11,.25);transform:scale(1.04);outline:0}
+@media (prefers-reduced-motion:reduce){.enterprise-table td[data-editable] .data-entry-value.is-empty{transition:none;transform:none!important}}
+
+/* Admin users: per-user table access chips and modal */
+.access-chip{display:inline-flex;align-items:center;gap:4px;margin:2px 4px 2px 0;padding:2px 9px;border-radius:999px;background:#E0ECFF;color:#1D4ED8;font-size:.74rem;font-weight:600;white-space:nowrap}
+.access-chip small{font-weight:500;opacity:.75}
+.access-chip-all{background:#DCFCE7;color:#15803D}
+.access-chip-default{background:#F1F5F9;color:#475569}
+.access-chip-none{background:#FEE2E2;color:#B91C1C}
+.access-mode{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.access-mode-option{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1.5px solid #E2E8F0;border-radius:12px;cursor:pointer}
+.access-mode-option span{display:flex;flex-direction:column}
+.access-mode-option small{color:var(--muted);font-size:.78rem}
+.access-mode-option:has(input:checked){border-color:#3B82F6;background:#EFF6FF}
+.access-hint{margin-bottom:12px;padding:10px 12px;border-radius:10px;background:#F8FAFC;color:#334155;font-size:.84rem}
+.access-form:has(input[name="access_mode"][value="default"]:checked) .access-custom{opacity:.4}
+.access-table{margin-bottom:12px;border:1px solid #E2E8F0;border-radius:12px;overflow:hidden}
+.access-table-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#F8FAFC}
+.access-table:has(.access-table-toggle:checked) .access-table-head{background:#EFF6FF}
+.access-quick{font-size:.78rem;color:var(--muted)}
+.access-quick .btn-link{font-size:.78rem;text-decoration:none}
+.access-columns{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px 14px;padding:12px 14px}
+.access-table:not(:has(.access-table-toggle:checked)) .access-columns{opacity:.4}
+.access-column{display:flex;gap:8px;align-items:center;font-size:.85rem;cursor:pointer}
+.access-column:has(input:checked) span{color:#1D4ED8;font-weight:600}
+@media (max-width:576px){.access-mode{grid-template-columns:1fr}}
+.access-form{min-height:0}
+
+/* Company modal customer picker: +/− rows per customer (one worksheet for 2 machines / 2 buildings) */
+.company-customer-option{display:flex;align-items:center;gap:8px;padding:3px 0 3px 1.75em;border-radius:8px}
+.company-customer-option .form-check-label{flex:1 1 auto;min-width:0}
+.company-customer-option.has-extra-rows{background:#EFF6FF}
+.customer-qty{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;margin-right:4px}
+.customer-qty-btn{width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;font-size:.75rem}
+.customer-qty-badge{font-size:.75rem;min-width:28px}
+
+/* Compact-table column order list (คอลัมน์ตาราง modal) */
+.column-order-list{list-style:none;margin:0;padding:0;border:1px solid #E2E8F0;border-radius:12px;overflow:hidden}
+.column-order-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #EEF2F6;background:#fff}
+.column-order-item:last-child{border-bottom:0}
+.column-order-item.is-fixed{background:#F8FAFC}
+.column-order-grip{width:16px;color:#94A3B8;text-align:center}
+.column-order-item:not(.is-fixed) .column-order-grip{cursor:grab;touch-action:none;padding:6px 0}
+.column-order-item:not(.is-fixed) .column-order-grip:hover{color:#3B82F6}
+.column-order-list.is-sorting,.column-order-list.is-sorting *{cursor:grabbing;user-select:none}
+.column-order-item.is-dragging{background:#EFF6FF;box-shadow:inset 3px 0 0 #3B82F6;position:relative;z-index:1}
+.column-order-label{font-weight:600;font-size:.9rem}
+.column-order-actions{display:flex;gap:4px;margin-left:auto}
+.column-order-item:nth-child(2) [data-column-move="up"],.column-order-item:last-child [data-column-move="down"]{opacity:.35;pointer-events:none}
+.column-order-input{flex:1 1 auto;max-width:340px;font-weight:600;border-color:transparent;background:transparent}
+.column-order-input:hover{border-color:#CBD5E1;background:#fff}
+.column-order-input:focus{border-color:#3B82F6;background:#fff}
+
+/* Date fields: a dd/mm/yy text box in front of the browser's date input, which stays hidden underneath and only
+   supplies its calendar (opened by the button); see dayFirstDate in app.js */
+.date-day-first{position:relative;display:block}
+.date-day-first>input[type="date"]{position:absolute;right:0;bottom:0;width:2rem;height:100%;padding:0;border:0;opacity:0;pointer-events:none}
+.date-day-first>.date-day-first-text{padding-right:2.25rem}
+.date-day-first-button{position:absolute;top:50%;right:.35rem;transform:translateY(-50%);display:inline-flex;align-items:center;justify-content:center;width:1.75rem;height:1.75rem;padding:0;border:0;border-radius:6px;background:transparent;color:#64748B;cursor:pointer}
+.date-day-first-button:hover,.date-day-first-button:focus-visible{background:#EFF6FF;color:#1D4ED8}
+.date-day-first>.form-control-sm.date-day-first-text{padding-right:1.9rem}
+.date-day-first>.form-control-sm~.date-day-first-button{width:1.5rem;height:1.5rem;right:.2rem;font-size:.8rem}
+
+/* Dashboard: company switcher, KPI cards, company comparison and the follow-up list */
+.dash-switch{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 20px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
+.dash-tab{display:inline-flex;align-items:center;gap:9px;min-height:42px;padding:8px 14px;border-radius:10px;color:#486581;font-weight:600;text-decoration:none;transition:background .18s,color .18s}
+.dash-tab:hover{background:#F0F4F8;color:var(--navy)}
+.dash-tab:focus-visible,.kpi-card:focus-visible,.company-card:focus-visible,.attention-item:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.dash-tab b{min-width:30px;padding:2px 8px;border-radius:999px;background:#EDF2F7;color:#486581;font-size:11px;text-align:center}
+.dash-tab.is-active{background:var(--navy);color:#fff}
+.dash-tab.is-active b{background:rgba(255,255,255,.18);color:#fff}
+.dash-dot{width:10px;height:10px;flex:none;border-radius:50%;background:var(--tab-color,#94A3B8);box-shadow:0 0 0 3px rgba(255,255,255,.9),0 0 0 4px var(--tab-color,#94A3B8)}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:24px}
+.kpi-card{position:relative;display:flex;flex-direction:column;gap:6px;padding:18px;overflow:hidden;background:#fff;border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);color:inherit;text-decoration:none;transition:transform .18s,box-shadow .18s,border-color .18s}
+.kpi-card[href]{cursor:pointer}
+.kpi-card[href]:hover{transform:translateY(-2px);border-color:#BFD3F6;box-shadow:0 12px 28px rgba(16,42,67,.12);color:inherit}
+.kpi-head{display:flex;align-items:center;gap:10px}
+.kpi-head p{flex:1;margin:0;color:var(--muted);font-size:12px;font-weight:600}
+.kpi-card .summary-icon{width:38px;height:38px;border-radius:11px;font-size:15px}
+.kpi-go{display:none;color:#829AB1;font-size:12px;transition:transform .18s}
+.kpi-card[href] .kpi-go{display:block}
+.kpi-card[href]:hover .kpi-go{transform:translateX(3px);color:var(--blue)}
+.kpi-card strong{font-size:30px;line-height:1.15;color:var(--navy);letter-spacing:-.02em}
+.kpi-card small{color:var(--muted);font-size:11px}
+.kpi-card.is-priority{border-color:#F7CFCF}
+.kpi-card.is-priority:before{content:'';position:absolute;inset:0 auto 0 0;width:4px;background:var(--red)}
+.kpi-card.is-priority strong{color:#B91C1C}
+.kpi-progress{height:6px;overflow:hidden;border-radius:999px;background:#E3F3E9}
+.kpi-progress span{display:block;height:100%;border-radius:inherit;background:var(--green);transition:width .6s ease}
+.chart-chip{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;background:#F0F4F8;color:#486581;font-size:11px;font-weight:600;white-space:nowrap}
+.company-cards{display:grid;gap:10px}
+.company-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px 12px;width:100%;padding:13px 15px;text-align:left;background:#fff;border:1px solid var(--border);border-radius:12px;color:inherit;transition:transform .18s,box-shadow .18s,border-color .18s}
+.company-card:hover{transform:translateY(-1px);border-color:#BFD3F6;box-shadow:0 8px 20px rgba(16,42,67,.08)}
+.company-card strong{color:var(--navy);font-size:14px}
+.company-total{color:var(--navy);font-weight:700}
+.company-card .kpi-progress{grid-column:1/-1}
+.company-meta{grid-column:1/-1;display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:11px}
+.company-late.is-late{color:#B91C1C;font-weight:700}
+.attention-list{display:flex;flex-direction:column;gap:8px;max-height:290px;overflow:auto;padding-right:2px}
+.attention-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:11px;color:inherit;text-decoration:none;transition:background .15s,border-color .15s}
+.attention-item:hover{background:#F8FAFD;border-color:#BFD3F6;color:inherit}
+.attention-item>div{flex:1;min-width:0}
+.attention-item strong{display:block;overflow:hidden;color:var(--navy);font-size:13px;text-overflow:ellipsis;white-space:nowrap}
+.attention-item small{color:var(--muted);font-size:11px}
+.days-pill{flex:none;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+.days-pill.late{background:#FDECEC;color:#B91C1C}
+.days-pill.soon{background:#FFF4D9;color:#92400E}
+.attention-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;height:260px;color:var(--muted);text-align:center}
+.attention-empty i{margin-bottom:6px;color:var(--green);font-size:30px}
+.attention-empty strong{color:var(--navy)}
+.dash-fade{animation:dashFade .35s ease}
+@keyframes dashFade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media(max-width:575.98px){.dash-switch{flex-wrap:nowrap;overflow-x:auto}.dash-tab{flex:none}.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.kpi-card strong{font-size:24px}}
+@media(prefers-reduced-motion:reduce){.dash-fade{animation:none}.kpi-card,.company-card,.kpi-progress span,.kpi-go{transition:none}}

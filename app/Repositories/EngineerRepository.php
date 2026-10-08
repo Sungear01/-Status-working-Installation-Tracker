@@ -47,69 +47,87 @@ final class EngineerRepository
     }
 
     /**
-     * Replace the whole list with $names, keeping the given order. A name already in the list keeps its row, so
-     * reordering never disturbs the value a customer already holds.
+     * The engineer of each of $customerIds, as [customer_id => name]: the initials (employee.initial_name) of the
+     * employee on the customer's Landy Home worksheet, unless someone picked a name in this system, which wins.
+     * $dataCompany (see CustomerRepository::dataCompany()): the names picked in that company's table, which keeps
+     * its own picks in company_installations; null = the shared picks in customer_engineers.
      */
-    public function replaceNames(array $names): void
+    public function valuesFor(array $customerIds, ?int $dataCompany = null): array
     {
-        if (!$this->hasTables()) {
-            return;
-        }
-        $clean = [];
-        foreach ($names as $name) {
-            $name = trim((string) $name);
-            if ($name !== '' && !in_array($name, $clean, true)) {
-                $clean[] = mb_substr($name, 0, self::MAX_LENGTH);
-            }
-        }
-        $this->db->beginTransaction();
-        try {
-            if ($clean === []) {
-                $this->db->exec('DELETE FROM engineers');
-            } else {
-                $delete = $this->db->prepare('DELETE FROM engineers WHERE name NOT IN (' . implode(',', array_fill(0, count($clean), '?')) . ')');
-                $delete->execute($clean);
-                $upsert = $this->db->prepare('INSERT INTO engineers (name, sort_order) VALUES (:name, :sort_order) ON DUPLICATE KEY UPDATE sort_order = VALUES(sort_order)');
-                foreach ($clean as $index => $name) {
-                    $upsert->execute(['name' => $name, 'sort_order' => $index + 1]);
-                }
-            }
-            $this->db->commit();
-        } catch (\Throwable $error) {
-            $this->db->rollBack();
-            throw $error;
-        }
-    }
-
-    /** The engineer of each of $customerIds, as [customer_id => name]. */
-    public function valuesFor(array $customerIds): array
-    {
-        if ($customerIds === [] || !$this->hasTables()) {
+        if ($customerIds === []) {
             return [];
         }
         $customerIds = array_values(array_map('intval', $customerIds));
-        $statement = $this->db->prepare('SELECT customer_id, engineer FROM customer_engineers WHERE customer_id IN ('
-            . implode(',', array_fill(0, count($customerIds), '?')) . ')');
-        $statement->execute($customerIds);
-        $values = [];
+        $values = $this->worksheetEngineers($customerIds);
+        $marks = implode(',', array_fill(0, count($customerIds), '?'));
+        if ($dataCompany !== null) {
+            $statement = $this->db->prepare("SELECT customer_id, engineer FROM company_installations WHERE company_id = ? AND engineer <> '' AND customer_id IN ({$marks})");
+            $statement->execute(array_merge([$dataCompany], $customerIds));
+        } elseif (!$this->hasTables()) {
+            return $values;
+        } else {
+            $statement = $this->db->prepare("SELECT customer_id, engineer FROM customer_engineers WHERE customer_id IN ({$marks})");
+            $statement->execute($customerIds);
+        }
         foreach ($statement->fetchAll() as $row) {
             $values[(int) $row['customer_id']] = (string) $row['engineer'];
         }
         return $values;
     }
 
-    public function valueFor(int $customerId): ?string
+    /**
+     * [worksheet id => employee initials] from Landy Home, joined worksheets.employee_id = employee.employee_id.
+     * Customer ids above zero are worksheet ids (negative ones are local rows with no worksheet). Read-only; if the
+     * Landy Home database cannot be read, the column just falls back to the names picked in this system.
+     */
+    private function worksheetEngineers(array $customerIds): array
     {
-        return $this->valuesFor([$customerId])[$customerId] ?? null;
+        $worksheetIds = array_values(array_filter($customerIds, static fn (int $id): bool => $id > 0));
+        $database = (string) config('customer.landyhome_database', 'landyhome');
+        if ($worksheetIds === [] || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $database)) {
+            return [];
+        }
+        try {
+            $statement = $this->db->prepare(sprintf(
+                'SELECT w.worksheet_id, TRIM(e.initial_name) AS initial_name
+                 FROM `%1$s`.`worksheets` w
+                 JOIN `%1$s`.`employee` e ON e.employee_id = w.employee_id
+                 WHERE w.worksheet_id IN (%2$s)',
+                $database,
+                implode(',', array_fill(0, count($worksheetIds), '?'))
+            ));
+            $statement->execute($worksheetIds);
+        } catch (\PDOException $error) {
+            error_log('[engineer] ' . $error->getMessage());
+            return [];
+        }
+        $values = [];
+        foreach ($statement->fetchAll() as $row) {
+            if ((string) $row['initial_name'] !== '') {
+                $values[(int) $row['worksheet_id']] = (string) $row['initial_name'];
+            }
+        }
+        return $values;
     }
 
-    /** An empty value clears the cell rather than storing a blank row. */
-    public function saveValue(int $customerId, ?string $engineer): void
+    public function valueFor(int $customerId, ?int $dataCompany = null): ?string
     {
+        return $this->valuesFor([$customerId], $dataCompany)[$customerId] ?? null;
+    }
+
+    /** An empty value clears the cell rather than storing a blank row. $dataCompany: see valuesFor(). */
+    public function saveValue(int $customerId, ?string $engineer, ?int $dataCompany = null): void
+    {
+        $engineer = $engineer === null ? '' : trim($engineer);
+        if ($dataCompany !== null) {
+            $this->db->prepare('INSERT INTO company_installations (company_id, customer_id, engineer) VALUES (:company_id, :customer_id, :engineer)
+                                ON DUPLICATE KEY UPDATE engineer = VALUES(engineer)')
+                ->execute(['company_id' => $dataCompany, 'customer_id' => $customerId, 'engineer' => $engineer === '' ? null : mb_substr($engineer, 0, self::MAX_LENGTH)]);
+            return;
+        }
         if (!$this->hasTables()) {
             return;
         }
-        $engineer = $engineer === null ? '' : trim($engineer);
         if ($engineer === '') {
             $this->db->prepare('DELETE FROM customer_engineers WHERE customer_id = :customer_id')->execute(['customer_id' => $customerId]);
             return;

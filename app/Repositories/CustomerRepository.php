@@ -37,33 +37,212 @@ final class CustomerRepository
         return '`' . $this->columns[$key] . '`';
     }
 
-    private function selectColumns(): string
+    /**
+     * $nameExpr replaces the plain name column (see from()); null = the name from the view. $withAssignment adds
+     * assignment_id, the customer_companies row a single-company tab row stands for (NULL for an unassigned customer).
+     */
+    private function selectColumns(?string $nameExpr = null, bool $withAssignment = false): string
     {
         $select = [];
         foreach ($this->columns as $alias => $column) {
-            $select[] = sprintf('`%s` AS `%s`', $column, $alias);
+            $select[] = $alias === 'name' && $nameExpr !== null
+                ? sprintf('%s AS `name`', $nameExpr)
+                : sprintf('`%s` AS `%s`', $column, $alias);
+        }
+        if ($withAssignment) {
+            $select[] = 'cc_dup.cc_dup_row AS assignment_id';
         }
         $select[] = sprintf('CASE WHEN %s IS NULL OR %s IS NULL THEN NULL ELSE DATEDIFF(%s, %s) END AS days_early_late', $this->col('installation_date_3'), $this->col('due_60_date'), $this->col('due_60_date'), $this->col('installation_date_3'));
         return implode(', ', $select);
     }
 
+    /**
+     * The FROM clause. On a single-company tab, a customer assigned to that company more than once (the same
+     * customer_id in several customer_companies rows, e.g. one Landy Home worksheet for 2 machines) is listed once
+     * per assignment, so the table matches the company's list. The joined table only exposes a column named
+     * cc_dup_* columns, so the view's own column names stay unambiguous. Group and "all" tabs list each customer once.
+     *
+     * Each of those rows may carry its own name in customer_companies.customer_other (e.g. "… (อาคาร B)"): when it is
+     * filled, that row shows it instead of the name from Landy Home / the view. Returns [from, params, name expression
+     * or null, whether the join is there]. Both sides are converted to one collation, since Landy Home may use another.
+     * A company other than the shared-data one reads its own tracking data (see source()).
+     */
+    private function from(array $filters): array
+    {
+        $companyId = (string) ($filters['company_id'] ?? '');
+        if (!empty($filters['company_ids']) || $companyId === '' || !ctype_digit($companyId)) {
+            return ["`{$this->table}`", [], null, false];
+        }
+        [$source, $sourceParams] = $this->source($this->dataCompany((int) $companyId));
+        $hasOtherName = self::hasCustomerOther($this->db);
+        $from = sprintf(
+            "%s LEFT JOIN (SELECT id AS cc_dup_row, customer_id AS cc_dup_customer%s FROM `customer_companies` WHERE company_id = :dup_company_id) AS cc_dup ON cc_dup.cc_dup_customer = %s",
+            $source,
+            $hasOtherName ? ', customer_other AS cc_dup_name' : '',
+            $this->col('id')
+        );
+        $nameExpr = $hasOtherName
+            ? sprintf("COALESCE(NULLIF(TRIM(CONVERT(cc_dup.cc_dup_name USING utf8mb4) COLLATE utf8mb4_unicode_ci), ''), CONVERT(%s USING utf8mb4) COLLATE utf8mb4_unicode_ci)", $this->col('name'))
+            : null;
+        return [$from, ['dup_company_id' => (int) $companyId] + $sourceParams, $nameExpr, true];
+    }
+
+    /** The tracking fields a company other than the shared-data one keeps for itself in company_installations. */
+    private const COMPANY_FIELDS = [
+        'zone', 'machine_size', 'po_sent_date', 'engineer_appointment_1', 'installation_date_1', 'engineer_appointment_2',
+        'installation_date_2', 'engineer_appointment_3', 'installation_date_3', 'status', 'notes', 'construction_notes',
+        'work_status', 'cap_notes', 'updated_by',
+    ];
+
+    private static ?bool $hasCompanyData = null;
+    private static ?int $sharedCompanyId = null;
+
+    /**
+     * The company whose own tracking data a request reads and writes, or null for the shared data in
+     * customer_installations. The shared-data company (CAP+, see sharedCompanyId()) uses the shared data; every other
+     * company has its own rows in company_installations, so editing one company's table never changes another's.
+     * Until database/company_installations.sql has run, every company keeps using the shared data.
+     */
+    public function dataCompany(int $companyId): ?int
+    {
+        return $this->hasCompanyData() && $companyId > 0 && $companyId !== $this->sharedCompanyId() ? $companyId : null;
+    }
+
+    /**
+     * The company whose table shows the shared data in customer_installations: the one named in
+     * config customer.shared_data_company (ids differ per server), else the default company (companies.is_default).
+     */
+    public function sharedCompanyId(): int
+    {
+        if (self::$sharedCompanyId === null) {
+            $statement = $this->db->prepare('SELECT id FROM companies ORDER BY name = :name DESC, is_default DESC, id ASC LIMIT 1');
+            $statement->execute(['name' => (string) config('customer.shared_data_company', 'CAP+')]);
+            self::$sharedCompanyId = (int) $statement->fetchColumn();
+        }
+        return self::$sharedCompanyId;
+    }
+
+    private function hasCompanyData(): bool
+    {
+        if (self::$hasCompanyData === null) {
+            self::$hasCompanyData = (bool) $this->db->query("SHOW TABLES LIKE 'company_installations'")->fetch();
+        }
+        return self::$hasCompanyData;
+    }
+
+    /**
+     * The rows to read from, as [SQL, params]: the view itself, or for $dataCompany the view with that company's own
+     * tracking fields in place of the shared ones. The derived table keeps the view's name and column names, so every
+     * query, filter and sort works on it unchanged. Its zone falls back to the shared one until the company sets its
+     * own, and its PO deadlines are calculated from its own PO date like the view does (+61 and +60 days).
+     */
+    private function source(?int $dataCompany): array
+    {
+        if ($dataCompany === null) {
+            return ["`{$this->table}`", []];
+        }
+        $select = [];
+        foreach ($this->columns as $key => $column) {
+            $select[] = match (true) {
+                $key === 'zone' => "COALESCE(NULLIF(cx.zone, ''), v.`{$column}`) AS `{$column}`",
+                $key === 'status' => "COALESCE(NULLIF(cx.status, ''), 'STATUS') AS `{$column}`",
+                $key === 'po_due_date' => "cx.po_sent_date + INTERVAL 61 DAY AS `{$column}`",
+                $key === 'due_60_date' => "cx.po_sent_date + INTERVAL 60 DAY AS `{$column}`",
+                $key === 'updated_at', in_array($key, self::COMPANY_FIELDS, true) => "cx.`{$key}` AS `{$column}`",
+                default => "v.`{$column}` AS `{$column}`",
+            };
+        }
+        return [
+            sprintf(
+                '(SELECT %s FROM `%s` v LEFT JOIN `company_installations` cx ON cx.customer_id = v.`%s` AND cx.company_id = :data_company_id) AS `%s`',
+                implode(', ', $select),
+                $this->table,
+                $this->columns['id'],
+                $this->table
+            ),
+            ['data_company_id' => $dataCompany],
+        ];
+    }
+
+    /**
+     * One customer_companies row of $customerId, with its own name (customer_other, '' when the column is missing),
+     * or null when the row does not exist or belongs to another customer.
+     */
+    public function findAssignment(int $assignmentId, int $customerId): ?array
+    {
+        $statement = $this->db->prepare(sprintf(
+            'SELECT id, company_id, customer_id, %s AS customer_other FROM `customer_companies` WHERE id = :id AND customer_id = :customer_id',
+            self::hasCustomerOther($this->db) ? 'customer_other' : "''"
+        ));
+        $statement->execute(['id' => $assignmentId, 'customer_id' => $customerId]);
+        return $statement->fetch() ?: null;
+    }
+
+    /** Whether a customer_companies row can carry its own name (the customer_other column exists). */
+    public function supportsAssignmentNames(): bool
+    {
+        return self::hasCustomerOther($this->db);
+    }
+
+    /** Set the name shown for one customer_companies row; null = show the customer's own name again. */
+    public function saveAssignmentName(int $assignmentId, ?string $name): void
+    {
+        if (!self::hasCustomerOther($this->db)) {
+            return;
+        }
+        $this->db->prepare('UPDATE `customer_companies` SET customer_other = :name WHERE id = :id')
+            ->execute(['name' => $name, 'id' => $assignmentId]);
+    }
+
+    /**
+     * Default-order prefix: customers with a tracking sort_order (their row order in the imported customers.xls) come
+     * first in that order, the rest follow in the usual order. '' while the column has not been added.
+     */
+    private function sheetOrder(): string
+    {
+        $trackingTable = $this->identifier((string) config('customer.tracking_table', 'customer_installations'));
+        if (self::$hasSortOrder === null) {
+            self::$hasSortOrder = (bool) $this->db->query("SHOW COLUMNS FROM `{$trackingTable}` LIKE 'sort_order'")->fetch();
+        }
+        if (!self::$hasSortOrder) {
+            return '';
+        }
+        $position = sprintf('(SELECT so.sort_order FROM `%s` so WHERE so.worksheet_id = `%s`.%s)', $trackingTable, $this->table, $this->col('id'));
+        return "{$position} IS NULL ASC, {$position} ASC, ";
+    }
+
+    private static ?bool $hasSortOrder = null;
+
+    /** Whether customer_companies has the customer_other column (added by hand); without it names are not replaced. */
+    private static ?bool $hasCustomerOther = null;
+
+    private static function hasCustomerOther(PDO $db): bool
+    {
+        if (self::$hasCustomerOther === null) {
+            self::$hasCustomerOther = (bool) $db->query("SHOW COLUMNS FROM `customer_companies` LIKE 'customer_other'")->fetch();
+        }
+        return self::$hasCustomerOther;
+    }
+
     public function paginate(array $filters): array
     {
-        [$where, $params] = $this->where($filters);
+        [$from, $fromParams, $nameExpr, $joined] = $this->from($filters);
+        [$where, $params] = $this->where($filters, $nameExpr);
+        $params += $fromParams;
         $allowedSorts = array_keys($this->columns);
         $sort = in_array($filters['sort'] ?? '', $allowedSorts, true) ? $filters['sort'] : null;
         $direction = strtolower((string) ($filters['direction'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
         $page = max(1, (int) ($filters['page'] ?? 1));
         $requestedPerPage = (int) ($filters['per_page'] ?? 25);
         $perPage = in_array($requestedPerPage, [10, 25, 50, 100], true) ? $requestedPerPage : 25;
-        $count = $this->db->prepare("SELECT COUNT(*) FROM `{$this->table}` {$where}");
+        $count = $this->db->prepare("SELECT COUNT(*) FROM {$from} {$where}");
         $count->execute($params);
         $total = (int) $count->fetchColumn();
         $offset = ($page - 1) * $perPage;
         $orderBy = $sort !== null
-            ? $this->col($sort) . ' ' . $direction
-            : sprintf('CASE WHEN %s < 0 THEN 0 ELSE 1 END ASC, CASE WHEN %s < 0 THEN %s END ASC, %s DESC', $this->col('id'), $this->col('id'), $this->col('id'), $this->col('id'));
-        $sql = sprintf('SELECT %s FROM `%s` %s ORDER BY %s LIMIT :limit OFFSET :offset', $this->selectColumns(), $this->table, $where, $orderBy);
+            ? ($sort === 'name' && $nameExpr !== null ? $nameExpr : $this->col($sort)) . ' ' . $direction
+            : $this->sheetOrder() . sprintf('CASE WHEN %s < 0 THEN 0 ELSE 1 END ASC, CASE WHEN %s < 0 THEN %s END ASC, %s DESC', $this->col('id'), $this->col('id'), $this->col('id'), $this->col('id'));
+        $sql = sprintf('SELECT %s FROM %s %s ORDER BY %s LIMIT :limit OFFSET :offset', $this->selectColumns($nameExpr, $joined), $from, $where, $orderBy);
         $statement = $this->db->prepare($sql);
         foreach ($params as $key => $value) {
             $statement->bindValue(':' . $key, $value);
@@ -76,20 +255,28 @@ final class CustomerRepository
 
     public function filtered(array $filters): array
     {
-        [$where, $params] = $this->where($filters);
-        $statement = $this->db->prepare(sprintf('SELECT %s FROM `%s` %s ORDER BY %s ASC', $this->selectColumns(), $this->table, $where, $this->col('name')));
+        [$from, $fromParams, $nameExpr, $joined] = $this->from($filters);
+        [$where, $params] = $this->where($filters, $nameExpr);
+        $params += $fromParams;
+        $statement = $this->db->prepare(sprintf('SELECT %s FROM %s %s ORDER BY %s ASC', $this->selectColumns($nameExpr, $joined), $from, $where, $nameExpr ?? $this->col('name')));
         $statement->execute($params);
         return $statement->fetchAll();
     }
 
-    private function where(array $filters): array
+    /** $nameExpr: the shown name when a row's customer_companies.customer_other replaces it (see from()). */
+    private function where(array $filters, ?string $nameExpr = null): array
     {
         $clauses = [];
         $params = [];
         if (($filters['search'] ?? '') !== '') {
-            $clauses[] = sprintf('(%s LIKE :search_name OR %s LIKE :search_zone OR %s LIKE :search_status)', $this->col('name'), $this->col('zone'), $this->col('status'));
             $search = '%' . mb_substr(trim((string) $filters['search']), 0, 100) . '%';
+            // The search finds a row by its shown name as well as by the original name.
+            $shownName = $nameExpr !== null ? " OR {$nameExpr} LIKE :search_shown_name" : '';
+            $clauses[] = sprintf('(%s LIKE :search_name%s OR %s LIKE :search_zone OR %s LIKE :search_status)', $this->col('name'), $shownName, $this->col('zone'), $this->col('status'));
             $params['search_name'] = $search;
+            if ($nameExpr !== null) {
+                $params['search_shown_name'] = $search;
+            }
             $params['search_zone'] = $search;
             $params['search_status'] = $search;
         }
@@ -131,33 +318,70 @@ final class CustomerRepository
         return [$clauses ? 'WHERE ' . implode(' AND ', $clauses) : '', $params];
     }
 
-    /** Lightweight id/name/contract_sign_date list for the company-assignment picker. */
+    /**
+     * id/name/contract_sign_date list for the company-assignment picker: every Landy Home worksheet customer (id =
+     * worksheet_id, contract date from projects.sign_contract_date), read straight from the Landy Home database rather
+     * than the view, which only lists customers already assigned to a company, plus the customers added in this
+     * system (negative ids, no contract date). Read-only; if Landy Home cannot be read, only the local ones are listed.
+     */
     public function listForSelection(): array
     {
-        $sql = sprintf('SELECT %s AS id, %s AS name, %s AS contract_sign_date FROM `%s` ORDER BY %s ASC', $this->col('id'), $this->col('name'), $this->col('contract_sign_date'), $this->table, $this->col('name'));
-        return $this->db->query($sql)->fetchAll();
+        $local = $this->db->query(sprintf(
+            'SELECT -id AS id, customer_name AS name, NULL AS contract_sign_date FROM `%s` WHERE worksheet_id IS NULL',
+            $this->identifier((string) config('customer.tracking_table', 'customer_installations'))
+        ))->fetchAll();
+        $landyhome = [];
+        $database = (string) config('customer.landyhome_database', 'landyhome');
+        try {
+            // 1970-01-01 is the unset placeholder in projects.sign_contract_date.
+            $landyhome = $this->db->query(sprintf(
+                "SELECT w.worksheet_id AS id, c.customer_name AS name,
+                        CASE WHEN p.sign_contract_date IS NULL OR p.sign_contract_date <= '1970-01-02' THEN NULL ELSE DATE(p.sign_contract_date) END AS contract_sign_date
+                 FROM `%1\$s`.`worksheets` w
+                 JOIN `%1\$s`.`customers` c ON c.customer_id = w.customer_id
+                 LEFT JOIN `%1\$s`.`projects` p ON p.project_id = w.project_id",
+                $this->identifier($database)
+            ))->fetchAll();
+        } catch (\PDOException $error) {
+            error_log('[customer picker] ' . $error->getMessage());
+        }
+        $rows = array_merge($landyhome, $local);
+        usort($rows, static fn (array $a, array $b): int => strcmp((string) $a['name'], (string) $b['name']));
+        return $rows;
     }
 
-    public function facets(): array
+    /** The filter choices, from the data of the table of $companyId (0 = the shared data). */
+    public function facets(int $companyId = 0): array
     {
+        [$source, $params] = $this->source($this->dataCompany($companyId));
         $result = [];
         foreach (['zone', 'machine_size', 'status'] as $field) {
-            $result[$field] = $this->db->query(sprintf('SELECT DISTINCT %s AS value FROM `%s` WHERE %s IS NOT NULL AND %s <> \'\' ORDER BY %s', $this->col($field), $this->table, $this->col($field), $this->col($field), $this->col($field)))->fetchAll(PDO::FETCH_COLUMN);
+            $statement = $this->db->prepare(sprintf('SELECT DISTINCT %1$s AS value FROM %2$s WHERE %1$s IS NOT NULL AND %1$s <> \'\' ORDER BY %1$s', $this->col($field), $source));
+            $statement->execute($params);
+            $result[$field] = $statement->fetchAll(PDO::FETCH_COLUMN);
         }
         return $result;
     }
 
-    public function find(string $id): ?array
+    /** One customer as the table of $companyId shows it (0 = the shared data). */
+    public function find(string $id, int $companyId = 0): ?array
     {
-        $statement = $this->db->prepare(sprintf('SELECT %s FROM `%s` WHERE %s = :id LIMIT 1', $this->selectColumns(), $this->table, $this->col('id')));
-        $statement->execute(['id' => $id]);
+        [$source, $params] = $this->source($this->dataCompany($companyId));
+        $statement = $this->db->prepare(sprintf('SELECT %s FROM %s WHERE %s = :id LIMIT 1', $this->selectColumns(), $source, $this->col('id')));
+        $statement->execute($params + ['id' => $id]);
         return $statement->fetch() ?: null;
     }
 
-    public function update(string $id, array $data): void
+    /** Save a customer's tracking fields as edited in the table of $companyId (0 = the shared data). */
+    public function update(string $id, array $data, int $companyId = 0): void
     {
         $this->assertWritesEnabled();
         $trackingTable = $this->identifier((string) config('customer.tracking_table', 'customer_installations'));
+        $dataCompany = $this->dataCompany($companyId);
+        if ($dataCompany !== null) {
+            $this->updateCompanyData((int) $id, $dataCompany, $data, $trackingTable);
+            return;
+        }
         if ((int) $id < 0) {
             $localId = abs((int) $id);
             $fields = ['customer_name', 'zone', 'machine_size', 'po_sent_date', 'po_due_date', 'engineer_appointment_1', 'installation_date_1', 'engineer_appointment_2', 'installation_date_2', 'engineer_appointment_3', 'installation_date_3', 'due_60_date', 'status', 'notes', 'construction_notes', 'work_status', 'cap_notes', 'updated_by'];
@@ -176,8 +400,46 @@ final class CustomerRepository
         // A worksheet customer's name comes from landyhome, so 'name' has no placeholder here; native prepares
         // reject any extra parameter, so pass only the ones the statement uses.
         $params = $data + ['id' => $id];
-        unset($params['name']);
+        unset($params['name'], $params['name_override']);
         $statement->execute($params);
+
+        // An admin renamed the customer on its detail page: the name is kept here (landyhome is never written) and
+        // customer_installation_view shows it instead of the Landy Home name. NULL = back to the Landy Home name.
+        if (array_key_exists('name_override', $data)) {
+            $rename = $this->db->prepare("UPDATE `{$trackingTable}` SET customer_name = :name WHERE worksheet_id = :id");
+            $rename->execute(['name' => $data['name_override'], 'id' => $id]);
+        }
+    }
+
+    /**
+     * update() for a company with its own data: the tracking fields go to its company_installations row. The name is
+     * not a company's own (a table row has its own name in customer_companies.customer_other), so a local customer's
+     * name and an admin's rename still change the shared name in customer_installations.
+     */
+    private function updateCompanyData(int $customerId, int $companyId, array $data, string $trackingTable): void
+    {
+        $fields = self::COMPANY_FIELDS;
+        $statement = $this->db->prepare(sprintf(
+            'INSERT INTO `company_installations` (`company_id`, `customer_id`, %s) VALUES (:company_id, :customer_id, %s) ON DUPLICATE KEY UPDATE %s, `updated_at` = NOW()',
+            implode(', ', array_map(static fn (string $field): string => "`{$field}`", $fields)),
+            implode(', ', array_map(static fn (string $field): string => ':' . $field, $fields)),
+            implode(', ', array_map(static fn (string $field): string => "`{$field}` = VALUES(`{$field}`)", $fields))
+        ));
+        $params = ['company_id' => $companyId, 'customer_id' => $customerId];
+        foreach ($fields as $field) {
+            $params[$field] = $data[$field] ?? null;
+        }
+        $params['status'] = $params['status'] ?? 'STATUS';
+        $statement->execute($params);
+
+        if ($customerId < 0 && ($data['name'] ?? null) !== null) {
+            $this->db->prepare("UPDATE `{$trackingTable}` SET customer_name = :name WHERE id = :local_id AND worksheet_id IS NULL")
+                ->execute(['name' => $data['name'], 'local_id' => abs($customerId)]);
+        }
+        if ($customerId > 0 && array_key_exists('name_override', $data)) {
+            $this->db->prepare("INSERT INTO `{$trackingTable}` (worksheet_id, customer_name) VALUES (:id, :name) ON DUPLICATE KEY UPDATE customer_name = VALUES(customer_name)")
+                ->execute(['id' => $customerId, 'name' => $data['name_override']]);
+        }
     }
 
     public function create(array $data): string
@@ -213,6 +475,9 @@ final class CustomerRepository
             $trackingTable = $this->identifier((string) config('customer.tracking_table', 'customer_installations'));
             $statement = $this->db->prepare("DELETE FROM `{$trackingTable}` WHERE id = :id AND worksheet_id IS NULL");
             $statement->execute(['id' => abs((int) $id)]);
+            if ($this->hasCompanyData()) {
+                $this->db->prepare('DELETE FROM `company_installations` WHERE customer_id = :id')->execute(['id' => (int) $id]);
+            }
             return;
         }
         if (config('customer.master_managed_externally', false)) {
@@ -227,31 +492,5 @@ final class CustomerRepository
         if (!config('customer.writes_enabled', false)) {
             throw new InvalidArgumentException('ระบบถูกตั้งเป็นอ่านอย่างเดียว กรุณาตรวจ mapping และเปิด CUSTOMER_WRITES_ENABLED ก่อน');
         }
-    }
-
-    public function dashboard(): array
-    {
-        $completedValues = config('customer.status.completed', []);
-        $marks = implode(',', array_fill(0, count($completedValues), '?'));
-        $sql = sprintf('SELECT COUNT(*) total, SUM(UPPER(%s) = \'YES\') yes_count, SUM(UPPER(%s) NOT IN (%s)) pending_count, SUM(%s < CURDATE() AND UPPER(%s) NOT IN (%s)) overdue_count, SUM(%s BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL %d DAY) AND UPPER(%s) NOT IN (%s)) near_due_count, SUM(UPPER(%s) IN (%s)) completed_count FROM `%s`', $this->col('status'), $this->col('status'), $marks, $this->col('due_60_date'), $this->col('status'), $marks, $this->col('due_60_date'), (int) config('customer.near_due_days', 7), $this->col('status'), $marks, $this->col('status'), $marks, $this->table);
-        $params = array_merge($completedValues, $completedValues, $completedValues, $completedValues);
-        $statement = $this->db->prepare($sql);
-        $statement->execute($params);
-        return $statement->fetch() ?: [];
-    }
-
-    public function chartData(): array
-    {
-        return [
-            'zones' => $this->groupBy('zone'),
-            'statuses' => $this->groupBy('status'),
-            'sizes' => $this->groupBy('machine_size'),
-            'months' => $this->db->query(sprintf("SELECT DATE_FORMAT(%s, '%%Y-%%m') label, COUNT(*) total FROM `%s` WHERE %s IS NOT NULL GROUP BY label ORDER BY label DESC LIMIT 12", $this->col('po_sent_date'), $this->table, $this->col('po_sent_date')))->fetchAll(),
-        ];
-    }
-
-    private function groupBy(string $field): array
-    {
-        return $this->db->query(sprintf("SELECT COALESCE(NULLIF(%s, ''), 'ไม่ระบุ') label, COUNT(*) total FROM `%s` GROUP BY %s ORDER BY total DESC", $this->col($field), $this->table, $this->col($field)))->fetchAll();
     }
 }

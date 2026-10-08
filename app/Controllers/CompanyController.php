@@ -6,10 +6,10 @@ namespace App\Controllers;
 
 use App\Core\Auth;
 use App\Core\Csrf;
+use App\Repositories\CompanyColumnLabelRepository;
 use App\Repositories\CompanyGroupRepository;
 use App\Repositories\CompanyRepository;
 use App\Repositories\CustomColumnRepository;
-use App\Repositories\EngineerRepository;
 use App\Services\ActivityLogger;
 
 final class CompanyController
@@ -138,10 +138,20 @@ final class CompanyController
         }
         $selected = $_POST['columns'] ?? [];
         $selected = is_array($selected) ? array_map('strval', $selected) : [];
-        // Keep the canonical column order; the customer name column is always shown.
-        $columns = array_values(array_filter($this->orderedColumnKeys((int) $id), static fn (string $key): bool => $key === 'name' || in_array($key, $selected, true)));
+        // Keep the order the admin arranged; the customer name stays first and the actions column last.
+        $valid = $this->orderedColumnKeys((int) $id);
+        $columns = ['name'];
+        foreach ($selected as $key) {
+            if (in_array($key, $valid, true) && !in_array($key, ['name', 'actions'], true) && !in_array($key, $columns, true)) {
+                $columns[] = $key;
+            }
+        }
+        if (in_array('actions', $selected, true)) {
+            $columns[] = 'actions';
+        }
         $repository->updateTableColumns((int) $id, $columns);
-        (new ActivityLogger())->log('update', 'company', $id, 'แก้ไขคอลัมน์ตารางบริษัท ' . $company['name'], ['table_columns' => $company['table_columns']], ['table_columns' => $columns]);
+        $labelChanges = $this->saveColumnLabels((int) $id, $valid);
+        (new ActivityLogger())->log('update', 'company', $id, 'แก้ไขคอลัมน์ตารางบริษัท ' . $company['name'], ['table_columns' => $company['table_columns']], ['table_columns' => $columns, 'labels' => $labelChanges]);
         flash('success', 'บันทึกคอลัมน์ตารางเรียบร้อย');
         redirect('/customers?company_id=' . (int) $id);
     }
@@ -164,8 +174,14 @@ final class CompanyController
         if (!is_array($visible) || $visible === []) {
             $visible = ['name', 'po_sent_date', 'po_due_date', 'engineer'];
         }
+        // Appended after the columns already arranged, still ahead of the actions column.
+        $hasActions = in_array('actions', $visible, true);
+        $visible = array_values(array_diff($visible, ['actions']));
         $visible[] = 'custom_' . $columnId;
-        $repository->updateTableColumns((int) $id, array_values(array_filter($this->orderedColumnKeys((int) $id), static fn (string $key): bool => in_array($key, $visible, true))));
+        if ($hasActions) {
+            $visible[] = 'actions';
+        }
+        $repository->updateTableColumns((int) $id, $visible);
 
         (new ActivityLogger())->log('create', 'company_custom_column', (string) $columnId, 'เพิ่มคอลัมน์ ' . $data['label'] . ' ในตารางบริษัท ' . $company['name'], null, $data);
         flash('success', 'เพิ่มคอลัมน์ ' . $data['label'] . ' เรียบร้อย');
@@ -320,6 +336,49 @@ final class CompanyController
         redirect('/customers?company_id=' . (int) $id);
     }
 
+    /**
+     * Header names typed into the column-order list (labels[key]). A custom column is renamed in place; a built-in
+     * one keeps a per-company name, and typing its default name back (default_labels[key]) or leaving it blank
+     * removes that. Names of columns not posted (hidden ones) are kept. Returns the names that changed.
+     */
+    private function saveColumnLabels(int $companyId, array $validKeys): array
+    {
+        $posted = is_array($_POST['labels'] ?? null) ? $_POST['labels'] : [];
+        $defaults = is_array($_POST['default_labels'] ?? null) ? $_POST['default_labels'] : [];
+        $labels = new CompanyColumnLabelRepository();
+        $current = $labels->forCompany($companyId);
+        $next = $current;
+        $customColumns = new CustomColumnRepository();
+        $changes = [];
+        foreach ($posted as $key => $label) {
+            $key = (string) $key;
+            $label = mb_substr(trim((string) $label), 0, CompanyColumnLabelRepository::MAX_LENGTH);
+            if (!in_array($key, $validKeys, true) || $key === 'actions') {
+                continue;
+            }
+            if (str_starts_with($key, 'custom_')) {
+                $column = $customColumns->find((int) substr($key, 7));
+                if ($label !== '' && $column && (int) $column['company_id'] === $companyId && $column['label'] !== $label) {
+                    $customColumns->updateLabel((int) $column['id'], $label);
+                    $changes[$key] = $label;
+                }
+                continue;
+            }
+            if ($label === '' || $label === trim((string) ($defaults[$key] ?? ''))) {
+                unset($next[$key]);
+            } else {
+                $next[$key] = $label;
+            }
+            if (($current[$key] ?? null) !== ($next[$key] ?? null)) {
+                $changes[$key] = $next[$key] ?? '(ค่าเริ่มต้น)';
+            }
+        }
+        if ($next !== $current) {
+            $labels->replaceForCompany($companyId, $next);
+        }
+        return $changes;
+    }
+
     /** Built-in column keys followed by this company's custom columns, with the actions column kept last. */
     private function orderedColumnKeys(int $companyId): array
     {
@@ -410,32 +469,13 @@ final class CompanyController
         $startYear = trim((string) ($_POST['start_year'] ?? ''));
         // Sent as one comma-separated field (not customer_ids[] per checkbox) so a company
         // with hundreds of customers doesn't blow past PHP's max_input_vars and get truncated.
+        // A customer may appear several times (the + button in the picker): one company-table row per appearance.
         $raw = trim((string) ($_POST['customer_ids'] ?? ''));
-        $customerIds = $raw === '' ? [] : array_values(array_unique(array_filter(array_map('intval', explode(',', $raw)))));
+        $customerIds = $raw === '' ? [] : array_values(array_filter(array_map('intval', explode(',', $raw))));
         return [
             'start_year' => preg_match('/^\d{4}$/', $startYear) ? $startYear : null,
             'customer_ids' => $customerIds,
         ];
-    }
-
-    /**
-     * Replace the choices of the built-in "วิศวกร" dropdown, one name per line, the way a custom column's
-     * options are edited. A name customers already hold keeps showing even after being taken off the list.
-     */
-    public function updateEngineers(): void
-    {
-        $this->verifyCsrf();
-        $names = preg_split('/
-||
-/', (string) ($_POST['engineers'] ?? '')) ?: [];
-        $engineers = new EngineerRepository();
-        $before = $engineers->names();
-        $engineers->replaceNames($names);
-        $after = $engineers->names();
-        (new ActivityLogger())->log('update', 'engineer_list', null, 'แก้ไขรายชื่อวิศวกร', ['engineers' => $before], ['engineers' => $after]);
-        flash('success', 'บันทึกรายชื่อวิศวกรเรียบร้อย');
-        $companyId = (int) ($_POST['company_id'] ?? 0);
-        redirect('/customers' . ($companyId > 0 ? '?company_id=' . $companyId : ''));
     }
 
     private function verifyCsrf(): void

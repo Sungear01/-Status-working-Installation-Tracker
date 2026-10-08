@@ -44,7 +44,6 @@ $router->post('/customers/{id}/delete', [CustomerController::class, 'destroy'], 
 $router->post('/companies', [CompanyController::class, 'store'], ['manage_companies']);
 $router->post('/companies/{id}', [CompanyController::class, 'update'], ['manage_companies']);
 $router->post('/companies/{id}/columns', [CompanyController::class, 'updateColumns'], ['manage_companies']);
-$router->post('/engineers', [CompanyController::class, 'updateEngineers'], ['manage_companies']);
 $router->post('/companies/{id}/custom-columns', [CompanyController::class, 'storeCustomColumn'], ['manage_companies']);
 $router->post('/companies/{id}/custom-columns/{columnId}', [CompanyController::class, 'updateCustomColumn'], ['manage_companies']);
 $router->post('/companies/{id}/custom-columns/{columnId}/delete', [CompanyController::class, 'destroyCustomColumn'], ['manage_companies']);
@@ -58,6 +57,7 @@ $router->post('/admin/users/{id}', [AdminUserController::class, 'update'], ['man
 $router->post('/admin/users/{id}/toggle', [AdminUserController::class, 'toggle'], ['manage_users']);
 $router->post('/admin/users/{id}/reset-password', [AdminUserController::class, 'resetPassword'], ['manage_users']);
 $router->post('/admin/users/{id}/send-reset-link', [AdminUserController::class, 'sendResetLink'], ['manage_users']);
+$router->post('/admin/users/{id}/table-access', [AdminUserController::class, 'updateTableAccess'], ['manage_users']);
 $router->post('/admin/users/{id}/unlock', [AdminUserController::class, 'unlock'], ['manage_users']);
 $router->post('/admin/users/{id}/impersonate', [ImpersonationController::class, 'start'], ['auth']);
 $router->post('/impersonate/stop', [ImpersonationController::class, 'stop'], ['auth']);

@@ -1,5 +1,80 @@
 (() => {
     'use strict';
+    // The browser's own date input orders day/month by the OS locale (here mm/dd/yyyy) and HTML cannot change that.
+    // So each date field gets a text box in front that reads and types dd/mm/yy (slashes added while typing; dd/mm/yyyy
+    // and Buddhist years like 2569 are accepted too), plus a button that opens the browser's own calendar. The date
+    // input stays underneath and still holds yyyy-mm-dd, so forms, filters and the server are unchanged.
+    // Returns the text box; a typed date is applied on Enter or when leaving the box.
+    const dayFirstDate = (input) => {
+        if (input.dataset.dayFirst) return input.dayFirstText;
+        input.dataset.dayFirst = '1';
+        const format = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(2, 4)}` : '');
+        const parse = (text) => {
+            const match = text.trim().match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/);
+            if (!match) return null;
+            let year = Number(match[3]);
+            if (match[3].length === 2) year += 2000;
+            if (year > 2400) year -= 543;
+            const date = new Date(year, Number(match[2]) - 1, Number(match[1]));
+            if (date.getFullYear() !== year || date.getMonth() !== Number(match[2]) - 1 || date.getDate() !== Number(match[1])) return null;
+            const pad = (number) => String(number).padStart(2, '0');
+            return `${year}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+        };
+        const wrap = document.createElement('span');
+        wrap.className = 'date-day-first';
+        input.parentNode.insertBefore(wrap, input);
+        const text = document.createElement('input');
+        text.type = 'text';
+        text.className = `${input.className.replace('data-entry-input', '')} date-day-first-text`;
+        text.placeholder = 'dd/mm/yy';
+        text.inputMode = 'numeric';
+        text.maxLength = 10;
+        text.autocomplete = 'off';
+        text.disabled = input.disabled;
+        text.readOnly = input.readOnly;
+        text.setAttribute('aria-label', input.getAttribute('aria-label') || (input.id && document.querySelector(`label[for="${input.id}"]`)?.textContent.trim()) || 'วันที่ (dd/mm/yy)');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'date-day-first-button';
+        button.tabIndex = -1;
+        button.title = 'เลือกจากปฏิทิน';
+        button.innerHTML = '<i class="fa-regular fa-calendar"></i>';
+        button.hidden = input.disabled || input.readOnly;
+        input.tabIndex = -1;
+        input.setAttribute('aria-hidden', 'true');
+        wrap.append(input, text, button);
+        const apply = (iso) => {
+            text.classList.remove('is-invalid');
+            text.value = format(iso);
+            if (input.value === iso) return;
+            input.value = iso;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const commit = () => {
+            if (text.value.trim() === '') { apply(''); return; }
+            const iso = parse(text.value);
+            if (iso) apply(iso); else text.classList.add('is-invalid');
+        };
+        text.addEventListener('input', (event) => {
+            // A slash typed right after the one added below is not doubled (06//10 → 06/10).
+            if (text.value.includes('//')) text.value = text.value.replace(/\/{2,}/g, '/');
+            // 06 → 06/ and 06/10 → 06/10/ while typing forward, so only digits need typing.
+            if (event.inputType === 'insertText' && /^\d{2}$|^\d{1,2}\/\d{2}$/.test(text.value)) text.value += '/';
+            text.classList.remove('is-invalid');
+        });
+        text.addEventListener('change', commit);
+        text.addEventListener('keydown', (event) => { if (event.key === 'Enter') commit(); });
+        button.addEventListener('click', () => {
+            try { input.showPicker(); } catch { text.focus(); }
+        });
+        // A date picked on the calendar (a real user event) shows in the text box.
+        input.addEventListener('change', (event) => { if (event.isTrusted) { text.value = format(input.value); text.classList.remove('is-invalid'); } });
+        text.value = format(input.value);
+        input.dayFirstText = text;
+        return text;
+    };
+    document.querySelectorAll('input[type="date"]').forEach(dayFirstDate);
     const sidebar = document.getElementById('sidebar');
     const backdrop = document.getElementById('sidebarBackdrop');
     const toggleSidebar = () => {
@@ -65,9 +140,17 @@
 
     const filterForm = document.getElementById('customerFilters');
     let searchTimer;
-    document.querySelector('[data-realtime-search]')?.addEventListener('input', () => {
+    const realtimeSearch = document.querySelector('[data-realtime-search]');
+    realtimeSearch?.addEventListener('input', () => {
         clearTimeout(searchTimer);
-        searchTimer = setTimeout(() => filterForm?.requestSubmit(), 450);
+        searchTimer = setTimeout(() => filterForm?.requestSubmit(), 5000);
+    });
+    // The filter form has no submit button and holds date fields, so the browser does not submit it on Enter by itself.
+    realtimeSearch?.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.isComposing) return;
+        event.preventDefault();
+        clearTimeout(searchTimer);
+        filterForm?.requestSubmit();
     });
     document.querySelectorAll('[data-auto-submit]').forEach((field) => field.addEventListener('change', () => filterForm?.requestSubmit()));
 
@@ -553,6 +636,8 @@
             if (!customerId) return;
             const body = new FormData();
             body.append('_token', csrfToken);
+            // The table being edited decides which columns a user with per-table access may change.
+            body.append('access_company_id', companyId);
             if (cell.dataset.customId) {
                 body.append('custom_company_id', companyId);
                 body.append(`custom[${cell.dataset.customId}]`, value);
@@ -616,11 +701,22 @@
             openCell = cell;
             cell.dataset.editing = '1';
             cell.replaceChildren(input);
-            input.focus();
-            input.select?.();
+            // A date cell is typed as dd/mm/yy in the text box (or picked on the calendar button next to it).
+            const dateText = input.type === 'date' ? dayFirstDate(input) : null;
+            const field = dateText || input;
+            field.focus();
+            field.select?.();
 
-            input.addEventListener('blur', () => { if (openCell === cell) closeEditor(true); });
-            input.addEventListener('keydown', (event) => {
+            if (dateText) {
+                // Saved once a date is applied (typed + Enter/leave, or picked), or when focus leaves the box and button.
+                input.addEventListener('change', () => { if (openCell === cell) closeEditor(true); });
+                dateText.parentNode.addEventListener('focusout', (event) => {
+                    if (openCell === cell && !dateText.parentNode.contains(event.relatedTarget)) closeEditor(true);
+                });
+            } else {
+                input.addEventListener('blur', () => { if (openCell === cell) closeEditor(true); });
+            }
+            field.addEventListener('keydown', (event) => {
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     closeEditor(false);
@@ -629,6 +725,11 @@
                 }
                 if (event.key !== 'Enter' && event.key !== 'Tab') return;
                 event.preventDefault();
+                if (dateText) {
+                    // Apply what was typed first (Tab does not do it on its own); an unreadable date keeps the box open.
+                    dateText.dispatchEvent(new Event('change'));
+                    if (dateText.classList.contains('is-invalid')) return;
+                }
                 const cells = editableCells();
                 const index = cells.indexOf(cell);
                 let next = null;

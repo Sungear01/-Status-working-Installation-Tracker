@@ -8,9 +8,11 @@ use App\Core\Auth;
 use App\Core\Csrf;
 use App\Core\View;
 use App\Repositories\CompanyRepository;
+use App\Repositories\CustomColumnRepository;
 use App\Repositories\PasswordResetRepository;
 use App\Repositories\RoleRepository;
 use App\Repositories\UserRepository;
+use App\Repositories\UserTableAccessRepository;
 use App\Services\ActivityLogger;
 use App\Services\MailService;
 
@@ -30,9 +32,62 @@ final class AdminUserController
         View::render('admin/users/index', [
             'users' => $users,
             'roles' => $roles,
-            'companies' => (new CompanyRepository())->all(),
+            'companies' => $this->companiesWithAccessColumns(),
+            'tableAccess' => (new UserTableAccessRepository())->all(),
             'pageTitle' => 'จัดการผู้ใช้งาน',
         ]);
+    }
+
+    /** Save which tables a user sees and which columns they may edit in each, or put them back on the defaults. */
+    public function updateTableAccess(string $id): void
+    {
+        $this->verifyCsrf();
+        $userId = (int) $id;
+        $this->guardDeveloperAccount($userId);
+        $user = (new UserRepository())->findWithRole($userId);
+        if (!$user) {
+            http_response_code(404);
+            exit('ไม่พบผู้ใช้งาน');
+        }
+        if (Auth::isSuperRole($user['role_slug'] ?? null)) {
+            flash('error', 'Admin เห็นและแก้ไขได้ทุกตารางอยู่แล้ว ไม่ต้องกำหนดสิทธิ์');
+            redirect('/admin/users');
+        }
+        $repository = new UserTableAccessRepository();
+        $old = $repository->forUser($userId);
+        if (($_POST['access_mode'] ?? 'default') !== 'custom') {
+            $repository->clearForUser($userId);
+            (new ActivityLogger())->log('update', 'user', $userId, 'ตั้งสิทธิ์ตารางกลับเป็นค่าเริ่มต้น', ['table_access' => $old], null);
+            flash('success', 'ใช้สิทธิ์ตารางตามค่าเริ่มต้นของ ' . $user['username'] . ' แล้ว');
+            redirect('/admin/users');
+        }
+        $tables = is_array($_POST['tables'] ?? null) ? $_POST['tables'] : [];
+        $editable = is_array($_POST['editable'] ?? null) ? $_POST['editable'] : [];
+        $access = [];
+        foreach ($this->companiesWithAccessColumns() as $company) {
+            $companyId = (int) $company['id'];
+            if (empty($tables[$companyId])) {
+                continue;
+            }
+            $posted = is_array($editable[$companyId] ?? null) ? array_map('strval', $editable[$companyId]) : [];
+            $access[$companyId] = array_values(array_intersect(array_keys($company['access_columns']), $posted));
+        }
+        $repository->replaceForUser($userId, $access);
+        (new ActivityLogger())->log('update', 'user', $userId, 'กำหนดสิทธิ์ตารางและคอลัมน์', ['table_access' => $old], ['table_access' => $access]);
+        flash('success', 'บันทึกสิทธิ์ตารางของ ' . $user['username'] . ' แล้ว (เห็น ' . count($access) . ' ตาราง)');
+        redirect('/admin/users');
+    }
+
+    /** Every company, each with the columns an admin can make editable on its table (see editableColumnsFor). */
+    private function companiesWithAccessColumns(): array
+    {
+        $customColumns = new CustomColumnRepository();
+        $companies = (new CompanyRepository())->all();
+        foreach ($companies as &$company) {
+            $company['access_columns'] = UserTableAccessRepository::editableColumnsFor($company, $customColumns->forCompany((int) $company['id']));
+        }
+        unset($company);
+        return $companies;
     }
 
     public function store(): void
@@ -46,7 +101,7 @@ final class AdminUserController
         }
         $id = (new UserRepository())->create([
             'role_id' => $data['role_id'],
-            'company_id' => $data['company_id'],
+            'company_id' => null,
             'username' => $data['username'],
             'name' => $data['name'],
             'email' => $data['email'],
@@ -54,7 +109,7 @@ final class AdminUserController
             'must_change_password' => 1,
             'is_active' => 1,
         ]);
-        (new ActivityLogger())->log('create', 'user', $id, 'เพิ่มผู้ใช้งาน', null, ['username' => $data['username'], 'role_id' => $data['role_id'], 'company_id' => $data['company_id']]);
+        (new ActivityLogger())->log('create', 'user', $id, 'เพิ่มผู้ใช้งาน', null, ['username' => $data['username'], 'role_id' => $data['role_id']]);
         flash('success', 'เพิ่มผู้ใช้งานเรียบร้อย');
         redirect('/admin/users');
     }
@@ -79,12 +134,13 @@ final class AdminUserController
         $repository->update($userId, [
             'username' => $data['username'],
             'role_id' => $data['role_id'],
-            'company_id' => $data['company_id'],
+            // The form no longer has "บริษัท" (table access replaced it), so an existing company is kept as it was.
+            'company_id' => $old['company_id'] ?? null,
             'name' => $data['name'],
             'email' => $data['email'],
             'is_active' => $data['is_active'],
         ]);
-        (new ActivityLogger())->log('update', 'user', $userId, 'แก้ไขผู้ใช้งาน', ['role_id' => $old['role_id'], 'company_id' => $old['company_id'], 'is_active' => $old['is_active']], ['role_id' => $data['role_id'], 'company_id' => $data['company_id'], 'is_active' => $data['is_active']]);
+        (new ActivityLogger())->log('update', 'user', $userId, 'แก้ไขผู้ใช้งาน', ['role_id' => $old['role_id'], 'is_active' => $old['is_active']], ['role_id' => $data['role_id'], 'is_active' => $data['is_active']]);
         flash('success', 'แก้ไขผู้ใช้งานเรียบร้อย');
         redirect('/admin/users');
     }
@@ -182,8 +238,7 @@ final class AdminUserController
             flash('error', 'รูปแบบอีเมลไม่ถูกต้อง');
             redirect('/admin/users');
         }
-        $companyId = filter_var($_POST['company_id'] ?? null, FILTER_VALIDATE_INT);
-        return ['username' => $username, 'name' => mb_substr($name, 0, 150), 'email' => $email ?: null, 'password' => $password, 'role_id' => (int) $roleId, 'company_id' => $companyId ?: null, 'is_active' => isset($_POST['is_active']) ? 1 : 0];
+        return ['username' => $username, 'name' => mb_substr($name, 0, 150), 'email' => $email ?: null, 'password' => $password, 'role_id' => (int) $roleId, 'is_active' => isset($_POST['is_active']) ? 1 : 0];
     }
 
     /** Only the system creator may change a developer account, so an admin cannot take it over. */

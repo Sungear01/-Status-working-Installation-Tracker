@@ -150,6 +150,12 @@ final class CustomColumnRepository
         $statement->execute($values + ['id' => $id]);
     }
 
+    /** Rename a column only, as the column-order list does; the rest of its settings stay as they are. */
+    public function updateLabel(int $id, string $label): void
+    {
+        $this->db->prepare('UPDATE company_custom_columns SET label = :label WHERE id = :id')->execute(['label' => $label, 'id' => $id]);
+    }
+
     public function delete(int $id): void
     {
         $this->db->prepare('DELETE FROM company_custom_columns WHERE id = :id')->execute(['id' => $id]);

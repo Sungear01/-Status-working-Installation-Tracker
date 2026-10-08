@@ -95,13 +95,70 @@ final class Auth
         return '/profile';
     }
 
+    /** Company table the current request works on; per-table edit rights (see tableAccess) are checked against it. */
+    private static ?int $currentCompanyId = null;
+
+    /** Per-request cache of tableAccess(); false means "not loaded yet". */
+    private static array|null|false $tableAccess = false;
+
+    public static function setCurrentCompany(?int $companyId): void
+    {
+        self::$currentCompanyId = $companyId !== null && $companyId > 0 ? $companyId : null;
+    }
+
+    public static function currentCompanyId(): ?int
+    {
+        return self::$currentCompanyId;
+    }
+
+    /**
+     * [company id => editable column keys] an admin set for the signed-in user, or null when not configured (or for
+     * admin/developer, who see and edit everything). Read on every request, so changes apply without signing out.
+     */
+    public static function tableAccess(): ?array
+    {
+        $user = self::user();
+        if ($user === null || self::isSuperRole($user['role_slug'] ?? null)) {
+            return null;
+        }
+        if (self::$tableAccess === false) {
+            self::$tableAccess = (new \App\Repositories\UserTableAccessRepository())->forUser((int) $user['id']);
+        }
+        return self::$tableAccess;
+    }
+
+    /** The company tables the user may see, or null when unrestricted. Per-user access wins over the single company. */
+    public static function allowedCompanyIds(): ?array
+    {
+        $access = self::tableAccess();
+        if ($access !== null) {
+            return array_keys($access);
+        }
+        $companyId = self::restrictedCompanyId();
+        return $companyId === null ? null : [$companyId];
+    }
+
+    /**
+     * Columns nobody edits here, not even admin: read from Landy Home (worksheets.zone, employee.initial_name), or
+     * calculated from วันที่ส่ง PO by customer_installation_view (+61 and +60 days), which ignores any typed value.
+     */
+    public const SOURCE_FIELDS = ['zone', 'engineer', 'po_due_date', 'due_60_date'];
+
     public static function canEditCustomerField(string $field): bool
     {
         $user = self::user();
-        if ($user === null || !self::can('edit_customer')) {
+        if ($user === null || !self::can('edit_customer') || in_array($field, self::SOURCE_FIELDS, true)) {
             return false;
         }
         if (self::isSuperRole($user['role_slug'])) {
+            return true;
+        }
+        $access = self::tableAccess();
+        if ($access !== null) {
+            return self::$currentCompanyId !== null && in_array($field, $access[self::$currentCompanyId] ?? [], true);
+        }
+        // Without per-user access, custom columns follow the edit_customer permission alone, as before.
+        if (str_starts_with($field, 'custom_')) {
             return true;
         }
         $fieldsByRole = config('customer.editable_fields_by_role', []);

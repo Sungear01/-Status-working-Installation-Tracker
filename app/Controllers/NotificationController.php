@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Core\Auth;
+use App\Repositories\CompanyRepository;
 use App\Repositories\CustomerRepository;
 use App\Repositories\LogRepository;
 
@@ -28,7 +29,24 @@ final class NotificationController
                 ];
             }
         }
-        foreach ((new CustomerRepository())->filtered([]) as $customer) {
+        // Only administrators may open the detail page; everyone else lands on the list, searched for that customer.
+        $canOpenDetail = Auth::isSuperRole(Auth::user()['role_slug'] ?? null);
+        $customerUrl = static fn (array $customer): string => $canOpenDetail
+            ? url('/customers/' . rawurlencode((string) $customer['id']))
+            : url('/customers?search=' . rawurlencode((string) ($customer['name'] ?? '')));
+        // A user limited to some tables is only told about the customers in them.
+        $customerFilters = [];
+        $allowedCompanyIds = Auth::allowedCompanyIds();
+        if ($allowedCompanyIds !== null) {
+            $customerFilters['company_ids'] = $allowedCompanyIds ?: [0];
+            $customerFilters['company_is_default'] = false;
+            foreach ((new CompanyRepository())->all() as $company) {
+                if (in_array((int) $company['id'], $allowedCompanyIds, true) && !empty($company['is_default'])) {
+                    $customerFilters['company_is_default'] = true;
+                }
+            }
+        }
+        foreach ((new CustomerRepository())->filtered($customerFilters) as $customer) {
             $due = $customer['due_60_date'] ?? null;
             try {
                 $days = $due ? (int) (new \DateTimeImmutable('today'))->diff(new \DateTimeImmutable((string) $due))->format('%r%a') : null;
@@ -40,11 +58,11 @@ final class NotificationController
                 continue;
             }
             if ($days === null) {
-                $items[] = ['type' => 'warning', 'icon' => 'fa-hourglass-half', 'title' => 'งานรอดำเนินการ', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' ยังไม่มีวันครบกำหนด', 'url' => url('/customers/' . rawurlencode((string) $customer['id']))];
+                $items[] = ['type' => 'warning', 'icon' => 'fa-hourglass-half', 'title' => 'งานรอดำเนินการ', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' ยังไม่มีวันครบกำหนด', 'url' => $customerUrl($customer)];
             } elseif ($days < 0) {
-                $items[] = ['type' => 'danger', 'icon' => 'fa-circle-exclamation', 'title' => 'งานเกินกำหนด', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' เกินกำหนด ' . abs($days) . ' วัน', 'url' => url('/customers/' . rawurlencode((string) $customer['id']))];
+                $items[] = ['type' => 'danger', 'icon' => 'fa-circle-exclamation', 'title' => 'งานเกินกำหนด', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' เกินกำหนด ' . abs($days) . ' วัน', 'url' => $customerUrl($customer)];
             } elseif ($days <= 7) {
-                $items[] = ['type' => 'warning', 'icon' => 'fa-clock', 'title' => 'งานใกล้ครบกำหนด', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' เหลือ ' . $days . ' วัน', 'url' => url('/customers/' . rawurlencode((string) $customer['id']))];
+                $items[] = ['type' => 'warning', 'icon' => 'fa-clock', 'title' => 'งานใกล้ครบกำหนด', 'detail' => ($customer['name'] ?? 'ลูกค้า') . ' เหลือ ' . $days . ' วัน', 'url' => $customerUrl($customer)];
             }
             if (count($items) >= 10) {
                 break;

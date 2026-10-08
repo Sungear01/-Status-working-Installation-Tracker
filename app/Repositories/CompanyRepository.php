@@ -99,16 +99,37 @@ final class CompanyRepository
         $statement->execute(['columns' => json_encode(array_values($columns)), 'id' => $id]);
     }
 
+    /**
+     * Make the company's rows match $customerIds, where a customer listed N times gets N rows (the + button in the
+     * picker: one worksheet for 2 machines / 2 buildings). Only the difference is written: missing rows are added,
+     * surplus rows removed — newest first, and rows without their own name (customer_other) before named ones — so
+     * the rows that stay keep their id and their customer_other name.
+     */
     private function syncCustomers(int $companyId, array $customerIds): void
     {
-        $delete = $this->db->prepare('DELETE FROM customer_companies WHERE company_id = :company_id');
-        $delete->execute(['company_id' => $companyId]);
-        if (!$customerIds) {
-            return;
+        $wanted = array_count_values(array_map('intval', $customerIds));
+        $hasOtherName = (bool) $this->db->query("SHOW COLUMNS FROM customer_companies LIKE 'customer_other'")->fetch();
+        $statement = $this->db->prepare(sprintf(
+            'SELECT id, customer_id FROM customer_companies WHERE company_id = :company_id ORDER BY %s id DESC',
+            $hasOtherName ? "(customer_other IS NOT NULL AND TRIM(customer_other) <> '') ASC," : ''
+        ));
+        $statement->execute(['company_id' => $companyId]);
+        $rowsByCustomer = [];
+        foreach ($statement->fetchAll() as $row) {
+            $rowsByCustomer[(int) $row['customer_id']][] = (int) $row['id'];  // removal order: first = removed first
+        }
+
+        $delete = $this->db->prepare('DELETE FROM customer_companies WHERE id = :id');
+        foreach ($rowsByCustomer as $customerId => $rowIds) {
+            foreach (array_slice($rowIds, 0, max(0, count($rowIds) - ($wanted[$customerId] ?? 0))) as $rowId) {
+                $delete->execute(['id' => $rowId]);
+            }
         }
         $insert = $this->db->prepare('INSERT INTO customer_companies (customer_id, company_id) VALUES (:customer_id, :company_id)');
-        foreach (array_unique($customerIds) as $customerId) {
-            $insert->execute(['customer_id' => $customerId, 'company_id' => $companyId]);
+        foreach ($wanted as $customerId => $count) {
+            for ($i = count($rowsByCustomer[$customerId] ?? []); $i < $count; $i++) {
+                $insert->execute(['customer_id' => $customerId, 'company_id' => $companyId]);
+            }
         }
     }
 }

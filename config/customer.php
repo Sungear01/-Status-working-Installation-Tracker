@@ -9,7 +9,15 @@ declare(strict_types=1);
 return [
     'table' => env('CUSTOMER_TABLE', 'customers'),
     'tracking_table' => 'customer_installations',
-    'master_managed_externally' => true,
+    // The company whose table shows and edits the data in tracking_table (the imported CAP+ data). Every other company
+    // keeps its own data in company_installations. Matched by name since ids differ per server; when no company has
+    // this name, the default company (companies.is_default) is used.
+    'shared_data_company' => env('SHARED_DATA_COMPANY', 'CAP+'),
+    // Database holding the Landy Home worksheets/employee tables, on the same MySQL server as cap_plus.
+    // The "วิศวกร" column defaults to employee.initial_name of the worksheet's employee_id from here.
+    'landyhome_database' => env('LANDYHOME_DATABASE', 'landyhome'),
+    // false: customers are added in this system (the "เพิ่มลูกค้า" button shows); the view no longer reads Landy Home.
+    'master_managed_externally' => false,
     'writes_enabled' => filter_var(env('CUSTOMER_WRITES_ENABLED', false), FILTER_VALIDATE_BOOL),
     'columns' => [
         'id' => 'id',
