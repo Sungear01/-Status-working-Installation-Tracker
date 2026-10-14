@@ -140,14 +140,28 @@ final class Auth
 
     /**
      * Columns nobody edits here, not even admin: read from Landy Home (worksheets.zone, employee.initial_name), or
-     * calculated from วันที่ส่ง PO by customer_installation_view (+61 and +60 days), which ignores any typed value.
+     * calculated from วันที่ส่ง PO by customer_installation_view (+61 days), which ignores any typed value.
+     * due_60_date is calculated too (+60 days) but may be typed over once the view reads the stored date.
      */
-    public const SOURCE_FIELDS = ['zone', 'engineer', 'po_due_date', 'due_60_date'];
+    public const SOURCE_FIELDS = ['zone', 'engineer', 'po_due_date'];
+
+    /**
+     * Whether $field of the current company's table is read from another company's table ("ดึงจาก", see
+     * CompanyColumnSourceRepository), so it is edited there, not here. ครบกำหนด 60 วัน follows วันที่ส่ง PO.
+     */
+    public static function isLinkedField(string $field): bool
+    {
+        if (self::$currentCompanyId === null) {
+            return false;
+        }
+        $links = (new \App\Repositories\CompanyColumnSourceRepository())->forCompany(self::$currentCompanyId);
+        return isset($links[$field]) || ($field === 'due_60_date' && isset($links['po_sent_date']));
+    }
 
     public static function canEditCustomerField(string $field): bool
     {
         $user = self::user();
-        if ($user === null || !self::can('edit_customer') || in_array($field, self::SOURCE_FIELDS, true)) {
+        if ($user === null || !self::can('edit_customer') || in_array($field, self::SOURCE_FIELDS, true) || self::isLinkedField($field)) {
             return false;
         }
         if (self::isSuperRole($user['role_slug'])) {

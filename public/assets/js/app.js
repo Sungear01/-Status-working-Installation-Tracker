@@ -785,6 +785,37 @@
     }
 })();
 
+// Live "8/12 ตัวอักษร" counter under a field with minlength, so the admin sees the rule is met before submitting.
+(() => {
+    'use strict';
+    document.querySelectorAll('[data-length-hint]').forEach((hint) => {
+        const input = document.getElementById(hint.dataset.lengthHint);
+        if (!input) return;
+        const min = input.minLength;
+        const icon = hint.querySelector('i');
+        const text = hint.querySelector('span');
+        const update = () => {
+            const count = input.value.length;
+            const met = count >= min;
+            hint.classList.toggle('is-met', met);
+            icon.className = met ? 'fa-solid fa-circle-check' : 'fa-regular fa-circle';
+            text.textContent = count === 0 ? `อย่างน้อย ${min} ตัวอักษร`
+                : met ? `ความยาวครบแล้ว (${count} ตัวอักษร)`
+                : `พิมพ์แล้ว ${count}/${min} ตัวอักษร · ขาดอีก ${min - count} ตัว`;
+        };
+        input.addEventListener('input', update);
+        // Closing the modal clears the typed password and any error, so reopening it starts fresh.
+        input.closest('.modal')?.addEventListener('hidden.bs.modal', () => {
+            input.value = '';
+            input.classList.remove('has-error');
+            input.removeAttribute('aria-invalid');
+            const error = document.getElementById(`${input.id}Error`);
+            if (error) error.hidden = true;
+            update();
+        });
+    });
+})();
+
 // Inline required-field validation for forms marked data-validate (Thai message under the field, no browser bubble).
 (() => {
     'use strict';

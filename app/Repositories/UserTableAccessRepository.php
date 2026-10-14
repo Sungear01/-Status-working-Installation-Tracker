@@ -17,7 +17,7 @@ use PDO;
 final class UserTableAccessRepository
 {
     /**
-     * Built-in columns a person can type into. Calculated columns (PO +60 days, ช้า/เร็ว) and those read from
+     * Built-in columns a person can type into. Calculated columns (PO +61 days, ช้า/เร็ว) and those read from
      * Landy Home (Zone, วิศวกร; see Auth::SOURCE_FIELDS) are never editable, so they are not offered.
      */
     public const EDITABLE_FIELDS = [
@@ -30,6 +30,7 @@ final class UserTableAccessRepository
         'installation_date_2' => 'ติดตั้งครั้งที่ 2',
         'engineer_appointment_3' => 'วิศวกรนัดครั้งที่ 3',
         'installation_date_3' => 'ติดตั้งครั้งที่ 3',
+        'due_60_date' => 'ครบกำหนด 60 วัน ครั้งที่ 2',
         'status' => 'Status',
         'work_status' => 'สถานะงาน',
         'construction_notes' => 'หมายเหตุทางฝ่ายก่อสร้าง',

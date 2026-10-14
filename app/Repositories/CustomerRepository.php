@@ -95,6 +95,7 @@ final class CustomerRepository
     ];
 
     private static ?bool $hasCompanyData = null;
+    private static ?bool $hasCompanyDue60 = null;
     private static ?int $sharedCompanyId = null;
 
     /**
@@ -122,6 +123,18 @@ final class CustomerRepository
         return self::$sharedCompanyId;
     }
 
+    /**
+     * Whether company_installations keeps a typed ครบกำหนด 60 วัน ครั้งที่ 2 date (database/due_60_date_override.sql).
+     * Without it, a company's date stays PO +60 days.
+     */
+    private function hasCompanyDue60(): bool
+    {
+        if (self::$hasCompanyDue60 === null) {
+            self::$hasCompanyDue60 = (bool) $this->db->query("SHOW COLUMNS FROM `company_installations` LIKE 'due_60_date'")->fetch();
+        }
+        return self::$hasCompanyDue60;
+    }
+
     private function hasCompanyData(): bool
     {
         if (self::$hasCompanyData === null) {
@@ -135,32 +148,67 @@ final class CustomerRepository
      * tracking fields in place of the shared ones. The derived table keeps the view's name and column names, so every
      * query, filter and sort works on it unchanged. Its zone falls back to the shared one until the company sets its
      * own, and its PO deadlines are calculated from its own PO date like the view does (+61 and +60 days).
+     *
+     * A column linked to another company's table (CompanyColumnSourceRepository, "ดึงจาก") is read from that table
+     * instead: the view for the shared-data company, else that company's company_installations rows. The PO deadlines
+     * follow วันที่ส่ง PO, so they come from wherever it comes from.
      */
     private function source(?int $dataCompany): array
     {
         if ($dataCompany === null) {
             return ["`{$this->table}`", []];
         }
+        $links = (new CompanyColumnSourceRepository())->forCompany($dataCompany);
+        $joins = '';
+        $params = ['data_company_id' => $dataCompany];
+        $aliases = [];  // source company id => alias of its company_installations join; null = the shared data (view)
+        foreach (array_unique($links) as $sourceId) {
+            if ($this->dataCompany($sourceId) === null) {
+                $aliases[$sourceId] = null;
+                continue;
+            }
+            $alias = 'cs' . $sourceId;
+            $aliases[$sourceId] = $alias;
+            $joins .= sprintf(' LEFT JOIN `company_installations` %1$s ON %1$s.customer_id = v.`%2$s` AND %1$s.company_id = :%1$s', $alias, $this->columns['id']);
+            $params[$alias] = $sourceId;
+        }
+        // The raw value of a company_installations field: own row, linked company's row, or the shared view's column.
+        $field = function (string $key) use ($links, $aliases): string {
+            if (!isset($links[$key])) {
+                return "cx.`{$key}`";
+            }
+            $alias = $aliases[$links[$key]];
+            return $alias === null ? 'v.`' . $this->columns[$key] . '`' : "{$alias}.`{$key}`";
+        };
+        $poFromShared = isset($links['po_sent_date']) && $aliases[$links['po_sent_date']] === null;
+        $poRow = isset($links['po_sent_date']) ? (string) $aliases[$links['po_sent_date']] : 'cx';
+        $po = $field('po_sent_date');
         $select = [];
         foreach ($this->columns as $key => $column) {
             $select[] = match (true) {
-                $key === 'zone' => "COALESCE(NULLIF(cx.zone, ''), v.`{$column}`) AS `{$column}`",
-                $key === 'status' => "COALESCE(NULLIF(cx.status, ''), 'STATUS') AS `{$column}`",
-                $key === 'po_due_date' => "cx.po_sent_date + INTERVAL 61 DAY AS `{$column}`",
-                $key === 'due_60_date' => "cx.po_sent_date + INTERVAL 60 DAY AS `{$column}`",
-                $key === 'updated_at', in_array($key, self::COMPANY_FIELDS, true) => "cx.`{$key}` AS `{$column}`",
+                $key === 'zone' => sprintf("COALESCE(NULLIF(%s, ''), v.`%s`) AS `%s`", $field('zone'), $column, $column),
+                $key === 'status' => sprintf("COALESCE(NULLIF(%s, ''), 'STATUS') AS `%s`", $field('status'), $column),
+                $key === 'po_due_date' => $poFromShared ? "v.`{$column}` AS `{$column}`" : "{$po} + INTERVAL 61 DAY AS `{$column}`",
+                $key === 'due_60_date' => match (true) {
+                    $poFromShared => "v.`{$column}` AS `{$column}`",
+                    $this->hasCompanyDue60() => "COALESCE({$poRow}.due_60_date, {$po} + INTERVAL 60 DAY) AS `{$column}`",
+                    default => "{$po} + INTERVAL 60 DAY AS `{$column}`",
+                },
+                $key === 'updated_at' => "cx.`{$key}` AS `{$column}`",
+                in_array($key, self::COMPANY_FIELDS, true) => $field($key) . " AS `{$column}`",
                 default => "v.`{$column}` AS `{$column}`",
             };
         }
         return [
             sprintf(
-                '(SELECT %s FROM `%s` v LEFT JOIN `company_installations` cx ON cx.customer_id = v.`%s` AND cx.company_id = :data_company_id) AS `%s`',
+                '(SELECT %s FROM `%s` v LEFT JOIN `company_installations` cx ON cx.customer_id = v.`%s` AND cx.company_id = :data_company_id%s) AS `%s`',
                 implode(', ', $select),
                 $this->table,
                 $this->columns['id'],
+                $joins,
                 $this->table
             ),
-            ['data_company_id' => $dataCompany],
+            $params,
         ];
     }
 
@@ -412,6 +460,49 @@ final class CustomerRepository
     }
 
     /**
+     * When a column of $companyId goes back from "ดึงจาก" to กรอกเอง: $copyFrom = the company it was read from, whose
+     * values become this company's own (a starting point to edit); null = empty the column. Only this company's own
+     * rows change. วันที่ส่ง PO also resets the typed ครบกำหนด 60 วัน, so it follows the new PO date.
+     */
+    public function resetCompanyColumn(int $companyId, string $key, ?int $copyFrom): void
+    {
+        $this->assertWritesEnabled();
+        if (!in_array($key, CompanyColumnSourceRepository::LINKABLE_FIELDS, true) || $this->dataCompany($companyId) === null) {
+            return;
+        }
+        $empty = $key === 'status' ? "'STATUS'" : 'NULL';
+        $also = $key === 'po_sent_date' && $this->hasCompanyDue60() ? ', `due_60_date` = NULL' : '';
+        $this->db->beginTransaction();
+        try {
+            $this->db->prepare("UPDATE `company_installations` SET `{$key}` = {$empty}{$also} WHERE company_id = :company_id")
+                ->execute(['company_id' => $companyId]);
+            if ($copyFrom !== null) {
+                // From the shared data (view) or the source company's own rows, for the customers in this company.
+                $from = $this->dataCompany($copyFrom) === null
+                    ? sprintf('SELECT v.`%s` AS customer_id, v.`%s` AS value FROM `%s` v', $this->columns['id'], $this->columns[$key], $this->table)
+                    : "SELECT s.customer_id, s.`{$key}` AS value FROM `company_installations` s WHERE s.company_id = :source_id";
+                $statement = $this->db->prepare(sprintf(
+                    "INSERT INTO `company_installations` (company_id, customer_id, `%1\$s`)
+                     SELECT :company_id, src.customer_id, src.value FROM (%2\$s) src
+                     WHERE src.value IS NOT NULL AND src.customer_id IN (SELECT customer_id FROM `customer_companies` WHERE company_id = :company_id2)
+                     ON DUPLICATE KEY UPDATE `%1\$s` = VALUES(`%1\$s`)",
+                    $key,
+                    $from
+                ));
+                $params = ['company_id' => $companyId, 'company_id2' => $companyId];
+                if ($this->dataCompany($copyFrom) !== null) {
+                    $params['source_id'] = $copyFrom;
+                }
+                $statement->execute($params);
+            }
+            $this->db->commit();
+        } catch (\Throwable $exception) {
+            $this->db->rollBack();
+            throw $exception;
+        }
+    }
+
+    /**
      * update() for a company with its own data: the tracking fields go to its company_installations row. The name is
      * not a company's own (a table row has its own name in customer_companies.customer_other), so a local customer's
      * name and an admin's rename still change the shared name in customer_installations.
@@ -419,15 +510,26 @@ final class CustomerRepository
     private function updateCompanyData(int $customerId, int $companyId, array $data, string $trackingTable): void
     {
         $fields = self::COMPANY_FIELDS;
+        if ($this->hasCompanyDue60()) {
+            $fields[] = 'due_60_date';
+        }
+        // A column read from another company's table ("ดึงจาก") shows that table's value; it must not be written
+        // into this company's own row, or switching back to กรอกเอง would show a copy instead of its own data.
+        $links = (new CompanyColumnSourceRepository())->forCompany($companyId);
+        $linked = array_keys($links);
+        if (isset($links['po_sent_date'])) {
+            $linked[] = 'due_60_date';
+        }
+        $updateFields = array_values(array_diff($fields, $linked));
         $statement = $this->db->prepare(sprintf(
             'INSERT INTO `company_installations` (`company_id`, `customer_id`, %s) VALUES (:company_id, :customer_id, %s) ON DUPLICATE KEY UPDATE %s, `updated_at` = NOW()',
             implode(', ', array_map(static fn (string $field): string => "`{$field}`", $fields)),
             implode(', ', array_map(static fn (string $field): string => ':' . $field, $fields)),
-            implode(', ', array_map(static fn (string $field): string => "`{$field}` = VALUES(`{$field}`)", $fields))
+            implode(', ', array_map(static fn (string $field): string => "`{$field}` = VALUES(`{$field}`)", $updateFields))
         ));
         $params = ['company_id' => $companyId, 'customer_id' => $customerId];
         foreach ($fields as $field) {
-            $params[$field] = $data[$field] ?? null;
+            $params[$field] = in_array($field, $linked, true) ? null : ($data[$field] ?? null);
         }
         $params['status'] = $params['status'] ?? 'STATUS';
         $statement->execute($params);

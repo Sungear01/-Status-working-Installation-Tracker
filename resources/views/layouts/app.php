@@ -1,6 +1,6 @@
 <?php $authUser = App\Core\Auth::user(); ?>
 <!doctype html>
-<html lang="th">
+<html lang="th" class="app-zoom">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -136,7 +136,7 @@ $daysText = static function ($value): string {
                                     <option value="<?= e((string) $year) ?>"><?= e((string) $year) ?></option>
                                 <?php endforeach; ?>
                             </select>
-                            <small class="text-secondary">เลือกปีเพื่อแสดงเฉพาะลูกค้าที่เซ็นสัญญาปีนั้น ไม่เลือกปีจะแสดงลูกค้าทั้งหมดจาก Landy Home</small>
+                            <small class="text-secondary">เลือกปีแล้ว ระบบจะติ๊กลูกค้าทุกรายที่เซ็นสัญญาปีนั้นให้ (ติ๊กออกรายที่ไม่ต้องการได้) · "ทุกปี" = เลือกลูกค้าเองทีละราย</small>
                         </div>
                         <div class="col-12">
                             <label class="form-label">ลูกค้าเพิ่มเติมในบริษัทนี้</label>
@@ -338,6 +338,7 @@ $daysText = static function ($value): string {
         var counts = {};
         (company.customer_ids || []).map(String).forEach(function (id) { counts[id] = (counts[id] || 0) + 1; });
         checkboxes.forEach(function (box) { setCount(box, counts[box.value] || 0); });
+        applyYear();
         filterCustomerList();
         if (Number(company.is_default) !== 1) {
             deleteForm.action = baseAction + '/' + company.id + '/delete';
@@ -394,8 +395,21 @@ $daysText = static function ($value): string {
             openForEdit(JSON.parse(button.dataset.company));
         });
     });
+    // With a year picked, ticks of other years are dropped (CompanyController::customersOfYear() drops them on save
+    // too). Picking the year ($fillYear) ticks every customer of it; each can then be unticked. Opening a saved
+    // company keeps its own ticks, so customers unticked earlier stay out. "ทุกปี" = tick by hand.
+    function applyYear(fillYear) {
+        var year = startYear.value;
+        if (!year) return;
+        document.querySelectorAll('.company-customer-option').forEach(function (row) {
+            var box = row.querySelector('input[type="checkbox"]');
+            var count = Number(box.dataset.count) || 0;
+            if (row.dataset.signYear !== year) setCount(box, 0);
+            else if (fillYear) setCount(box, Math.max(1, count));
+        });
+    }
     if (search) search.addEventListener('input', filterCustomerList);
-    startYear.addEventListener('change', filterCustomerList);
+    startYear.addEventListener('change', function () { applyYear(true); filterCustomerList(); });
 
     var selectAllBtn = document.getElementById('selectAllCustomers');
     var clearAllBtn = document.getElementById('clearAllCustomers');
@@ -499,18 +513,40 @@ $daysText = static function ($value): string {
         <div class="modal-content">
             <div class="modal-header"><h2 class="modal-title fs-5">คอลัมน์ตาราง <?= e($compactCompany['name']) ?></h2><button class="btn-close" type="button" data-bs-dismiss="modal"></button></div>
             <div class="modal-body">
-                <?php $hiddenColumns = array_diff_key($allColumns, $columns); ?>
+                <?php $hiddenColumns = array_diff_key($allColumns, $columns);
+                // Per column "where the data comes from": กรอกเอง, or ดึงจาก another company's table (read-only here).
+                $linkableKeys = !empty($canLinkColumns) ? App\Repositories\CompanyColumnSourceRepository::LINKABLE_FIELDS : [];
+                $columnSources = $columnSources ?? [];
+                $sourceCompanies = array_values(array_filter($companies, static fn (array $c): bool => (int) $c['id'] !== (int) $compactCompany['id']));
+                $sourceSelect = static function (string $key, string $label) use ($linkableKeys, $sourceCompanies, $columnSources): string {
+                    if (!in_array($key, $linkableKeys, true)) {
+                        return '';
+                    }
+                    $linkedTo = (int) ($columnSources[$key] ?? 0);
+                    // An <option> cannot hold an icon, so the icon sits inside the box and follows the choice (see JS).
+                    $html = '<span class="column-source"><i class="fa-solid ' . ($linkedTo > 0 ? 'fa-link' : 'fa-pen') . ' column-source-icon" aria-hidden="true"></i>'
+                        . '<select class="form-select form-select-sm column-source-select" name="sources[' . e($key) . ']" data-initial="' . ($linkedTo > 0 ? $linkedTo : '') . '" aria-label="ข้อมูลคอลัมน์ ' . e($label) . ' มาจาก" title="ข้อมูลคอลัมน์นี้มาจากไหน">'
+                        . '<option value="">กรอกเอง</option><optgroup label="ดึงจากตาราง (แก้ที่ตารางต้นทาง)">';
+                    foreach ($sourceCompanies as $sourceCompany) {
+                        $html .= '<option value="' . (int) $sourceCompany['id'] . '"' . ($linkedTo === (int) $sourceCompany['id'] ? ' selected' : '') . '>' . e($sourceCompany['name']) . '</option>';
+                    }
+                    return $html . '</optgroup></select></span>';
+                }; ?>
                 <form method="post" action="<?= e(url($companyBase . '/columns')) ?>" id="tableColumnsForm" class="mb-4">
                     <?= csrf_field() ?>
                     <h3 class="fs-6 mb-1"><i class="fa-solid fa-list-ol me-1"></i>คอลัมน์ในตาราง</h3>
-                    <p class="text-secondary small mb-2">ลาก <i class="fa-solid fa-grip-vertical"></i> ไปวางตำแหน่งที่ต้องการ หรือกด <i class="fa-solid fa-arrow-up"></i> <i class="fa-solid fa-arrow-down"></i> เพื่อเลื่อนทีละช่อง · คลิกที่ชื่อเพื่อ<strong>เปลี่ยนชื่อหัวคอลัมน์</strong> (ลบให้ว่าง = กลับเป็นชื่อเดิม) · <i class="fa-solid fa-pen-to-square"></i> ตั้งค่าคอลัมน์ที่สร้างเอง · <i class="fa-solid fa-xmark"></i> เอาออกจากตาราง (ข้อมูลไม่หาย เพิ่มกลับได้) · แล้วกดบันทึกลำดับ</p>
+                    <ul class="column-help">
+                        <li><i class="fa-solid fa-grip-vertical"></i> ลาก หรือกด <i class="fa-solid fa-arrow-up"></i><i class="fa-solid fa-arrow-down"></i> เพื่อเรียงลำดับ · คลิกชื่อเพื่อเปลี่ยนชื่อหัวคอลัมน์ · <i class="fa-solid fa-xmark"></i> เอาออก (ข้อมูลไม่หาย)</li>
+                        <?php if ($linkableKeys !== []): ?><li><i class="fa-solid fa-link"></i> ช่องด้านขวาของแต่ละคอลัมน์: <strong><i class="fa-solid fa-pen"></i> กรอกเอง</strong> = กรอกในตารางนี้ · <strong><i class="fa-solid fa-link"></i> ชื่อตาราง</strong> = ใช้ข้อมูลของตารางนั้นแบบอัปเดตตามทันที (แก้ได้ที่ตารางต้นทาง)</li><?php endif; ?>
+                    </ul>
                     <ul class="column-order-list" id="columnOrderList">
                         <li class="column-order-item is-fixed"><span class="column-order-grip"><i class="fa-solid fa-lock"></i></span><input class="form-control form-control-sm column-order-input" name="labels[name]" value="<?= e($allColumns['name']) ?>" placeholder="<?= e($defaultColumnLabels['name']) ?>" maxlength="150" aria-label="ชื่อหัวคอลัมน์"><input type="hidden" name="default_labels[name]" value="<?= e($defaultColumnLabels['name']) ?>"><small class="text-secondary ms-auto text-nowrap">อยู่แรกเสมอ</small></li>
                         <?php foreach ($columns as $key => $label): if ($key === 'name') continue; $customId = isset($customByKey[$key]) ? (int) $customByKey[$key]['id'] : null; ?>
-                            <li class="column-order-item" data-key="<?= e($key) ?>">
+                            <li class="column-order-item<?= isset($columnSources[$key]) && in_array($key, $linkableKeys, true) ? ' is-linked' : '' ?>" data-key="<?= e($key) ?>">
                                 <input type="hidden" name="columns[]" value="<?= e($key) ?>">
                                 <span class="column-order-grip"><i class="fa-solid fa-grip-vertical"></i></span>
                                 <input class="form-control form-control-sm column-order-input" name="labels[<?= e($key) ?>]" value="<?= e($label) ?>" placeholder="<?= e($defaultColumnLabels[$key] ?? $label) ?>" maxlength="150" aria-label="ชื่อหัวคอลัมน์"><input type="hidden" name="default_labels[<?= e($key) ?>]" value="<?= e($defaultColumnLabels[$key] ?? $label) ?>"><?php if ($customId !== null): ?><span class="badge text-bg-light border">สร้างเอง</span><?php endif; ?>
+                                <?= $sourceSelect($key, $label) ?>
                                 <span class="column-order-actions">
                                     <button type="button" class="btn btn-sm btn-light" data-column-move="up" title="เลื่อนขึ้น"><i class="fa-solid fa-arrow-up"></i></button>
                                     <button type="button" class="btn btn-sm btn-light" data-column-move="down" title="เลื่อนลง"><i class="fa-solid fa-arrow-down"></i></button>
@@ -520,12 +556,15 @@ $daysText = static function ($value): string {
                             </li>
                         <?php endforeach; ?>
                     </ul>
+                    <?php // A column added back with "+ เพิ่มคอลัมน์" gets its source select from here (see makeItem()). ?>
+                    <?php foreach ($hiddenColumns as $key => $label): if (($select = $sourceSelect($key, $label)) === '') continue; ?>
+                        <template data-source-template="<?= e($key) ?>"><?= $select ?></template>
+                    <?php endforeach; ?>
                     <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
                         <select class="form-select w-auto" id="columnAddSelect" aria-label="เพิ่มคอลัมน์กลับเข้าตาราง">
                             <option value="">+ เพิ่มคอลัมน์เข้าตาราง...</option>
                             <?php foreach ($hiddenColumns as $key => $label): ?><option value="<?= e($key) ?>" data-custom="<?= isset($customByKey[$key]) ? (int) $customByKey[$key]['id'] : '' ?>" data-default="<?= e($defaultColumnLabels[$key] ?? $label) ?>"><?= e($label) ?></option><?php endforeach; ?>
                         </select>
-                        <button class="btn btn-primary ms-auto" type="submit"><i class="fa-solid fa-floppy-disk me-1"></i>บันทึกลำดับคอลัมน์</button>
                     </div>
                 </form>
                 <hr>
@@ -640,6 +679,8 @@ $daysText = static function ($value): string {
             </div>
             <div class="modal-footer">
                 <button class="btn btn-light" type="button" data-bs-dismiss="modal">ยกเลิก</button>
+                <?php // Always in view (the body scrolls), so the change list never hides the save button. ?>
+                <button class="btn btn-primary" type="submit" form="tableColumnsForm" id="tableColumnsSave"><i class="fa-solid fa-floppy-disk me-1"></i>บันทึกคอลัมน์</button>
             </div>
         </div>
     </div>
@@ -652,12 +693,53 @@ $daysText = static function ($value): string {
     var addSelect = document.getElementById('columnAddSelect');
     var form = document.getElementById('tableColumnsForm');
     if (!list || !addSelect || !form) return;
-    var saveButton = form.querySelector('button[type="submit"]');
+    var saveButton = document.getElementById('tableColumnsSave');
     var markDirty = function () {
         saveButton.classList.remove('btn-primary');
         saveButton.classList.add('btn-warning');
-        saveButton.innerHTML = '<i class="fa-solid fa-floppy-disk me-1"></i>บันทึกลำดับคอลัมน์ (ยังไม่ได้บันทึก)';
+        saveButton.innerHTML = '<i class="fa-solid fa-floppy-disk me-1"></i>บันทึกคอลัมน์ (ยังไม่ได้บันทึก)';
     };
+    // "กรอกเอง / ตาราง…" in a column row: pen or link icon, tint a linked column, and remind to save.
+    form.addEventListener('change', function (event) {
+        if (!event.target.classList.contains('column-source-select')) return;
+        var select = event.target;
+        var linked = select.value !== '';
+        var item = select.closest('.column-order-item');
+        item.classList.toggle('is-linked', linked);
+        select.closest('.column-source').querySelector('.column-source-icon').className = 'fa-solid ' + (linked ? 'fa-link' : 'fa-pen') + ' column-source-icon';
+        // Going back from "ดึงจาก" to กรอกเอง: ask what the column starts from (CompanyController::saveColumnSources()).
+        var reset = item.querySelector('.column-source-reset');
+        var unlinking = !linked && select.dataset.initial !== '';
+        if (unlinking && !reset) {
+            var key = item.dataset.key;
+            var initialOption = select.querySelector('option[value="' + select.dataset.initial + '"]');
+            var from = initialOption ? initialOption.textContent : 'ตารางต้นทาง';
+            reset = document.createElement('fieldset');
+            reset.className = 'column-source-reset';
+            reset.innerHTML = '<legend>เปลี่ยนเป็นกรอกเอง: ข้อมูลในคอลัมน์นี้จะเริ่มจาก</legend>';
+            [
+                ['', 'ข้อมูลเดิมของตารางนี้', 'ไม่มีอะไรเปลี่ยนแปลง'],
+                ['copy', 'คัดลอกจากตาราง ' + from, 'ใช้ค่าที่เห็นอยู่ตอนนี้ แล้วแก้ต่อในตารางนี้ได้'],
+                ['empty', 'ค่าว่าง', 'ลบข้อมูลเดิมของคอลัมน์นี้ในตารางนี้ กู้คืนไม่ได้'],
+            ].forEach(function (choice, index) {
+                var label = document.createElement('label');
+                label.className = 'column-source-choice' + (choice[0] === 'empty' ? ' is-danger' : '');
+                var radio = document.createElement('input');
+                radio.type = 'radio'; radio.className = 'form-check-input'; radio.name = 'source_reset[' + key + ']'; radio.value = choice[0];
+                radio.checked = index === 0;
+                var text = document.createElement('span');
+                text.innerHTML = '<strong></strong><small></small>';
+                text.querySelector('strong').textContent = choice[1];
+                text.querySelector('small').textContent = choice[2];
+                label.append(radio, text);
+                reset.append(label);
+            });
+            item.append(reset);
+        } else if (!unlinking && reset) {
+            reset.remove();
+        }
+        markDirty();
+    });
     var button = function (icon, title, attr, extraClass) {
         var element = document.createElement('button');
         element.type = 'button';
@@ -687,7 +769,14 @@ $daysText = static function ($value): string {
         actions.append(button('fa-arrow-up', 'เลื่อนขึ้น', ['data-column-move', 'up']), button('fa-arrow-down', 'เลื่อนลง', ['data-column-move', 'down']));
         if (customId) actions.append(button('fa-pen-to-square', 'แก้ไขคอลัมน์ ' + label, ['data-column-edit', 'editColumn' + customId], 'btn-outline-primary'));
         actions.append(button('fa-xmark', 'เอาออกจากตาราง', ['data-column-remove', ''], 'btn-outline-danger'));
-        item.append(input, grip, text, defaultInput, actions);
+        item.append(input, grip, text, defaultInput);
+        var sourceTemplate = form.querySelector('template[data-source-template="' + key + '"]');
+        if (sourceTemplate) {
+            var source = sourceTemplate.content.firstElementChild.cloneNode(true);
+            item.classList.toggle('is-linked', source.querySelector('select').value !== '');
+            item.append(source);
+        }
+        item.append(actions);
         return item;
     };
     list.addEventListener('click', function (event) {

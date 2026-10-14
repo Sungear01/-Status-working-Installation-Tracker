@@ -78,11 +78,14 @@
             <?php endif; ?>
         </form>
         <div class="text-center text-secondary my-3">หรือ</div>
-        <form method="post" action="<?= e(url('/admin/users/' . $user['id'] . '/reset-password')) ?>">
+        <?php $passwordId = 'manualPassword' . (int) $user['id']; ?>
+        <form method="post" action="<?= e(url('/admin/users/' . $user['id'] . '/reset-password')) ?>" novalidate data-validate>
             <?= csrf_field() ?>
-            <label class="form-label fw-bold" for="manualPassword<?= (int) $user['id'] ?>">กำหนดรหัสผ่านชั่วคราวเอง</label>
-            <input type="password" class="form-control" id="manualPassword<?= (int) $user['id'] ?>" name="password" minlength="12" autocomplete="new-password" required>
-            <div class="form-text mb-3">อย่างน้อย 12 ตัวอักษร และควรส่งให้ผู้ใช้ผ่านช่องทางที่ปลอดภัย</div>
+            <label class="form-label fw-bold" for="<?= $passwordId ?>">กำหนดรหัสผ่านชั่วคราวเอง</label>
+            <input type="password" class="form-control" id="<?= $passwordId ?>" name="password" minlength="12" autocomplete="new-password" required aria-describedby="<?= $passwordId ?>Error <?= $passwordId ?>Length" data-required-message="กรุณากรอกรหัสผ่านชั่วคราว" data-invalid-message="รหัสผ่านสั้นเกินไป ต้องมีอย่างน้อย 12 ตัวอักษร">
+            <div class="field-error" id="<?= $passwordId ?>Error" role="alert" hidden><i class="fa-solid fa-circle-exclamation"></i><span></span></div>
+            <div class="length-hint" id="<?= $passwordId ?>Length" data-length-hint="<?= $passwordId ?>" aria-live="polite"><i class="fa-regular fa-circle"></i><span>อย่างน้อย 12 ตัวอักษร</span></div>
+            <div class="form-text mb-3">ควรส่งรหัสผ่านให้ผู้ใช้ผ่านช่องทางที่ปลอดภัย</div>
             <button class="btn btn-outline-warning w-100">กำหนดรหัสผ่านเอง</button>
         </form>
     </div>

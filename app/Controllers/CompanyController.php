@@ -7,9 +7,11 @@ namespace App\Controllers;
 use App\Core\Auth;
 use App\Core\Csrf;
 use App\Repositories\CompanyColumnLabelRepository;
+use App\Repositories\CompanyColumnSourceRepository;
 use App\Repositories\CompanyGroupRepository;
 use App\Repositories\CompanyRepository;
 use App\Repositories\CustomColumnRepository;
+use App\Repositories\CustomerRepository;
 use App\Services\ActivityLogger;
 
 final class CompanyController
@@ -151,7 +153,8 @@ final class CompanyController
         }
         $repository->updateTableColumns((int) $id, $columns);
         $labelChanges = $this->saveColumnLabels((int) $id, $valid);
-        (new ActivityLogger())->log('update', 'company', $id, 'แก้ไขคอลัมน์ตารางบริษัท ' . $company['name'], ['table_columns' => $company['table_columns']], ['table_columns' => $columns, 'labels' => $labelChanges]);
+        [$oldSources, $newSources] = $this->saveColumnSources((int) $id);
+        (new ActivityLogger())->log('update', 'company', $id, 'แก้ไขคอลัมน์ตารางบริษัท ' . $company['name'], ['table_columns' => $company['table_columns'], 'sources' => $oldSources], ['table_columns' => $columns, 'labels' => $labelChanges, 'sources' => $newSources]);
         flash('success', 'บันทึกคอลัมน์ตารางเรียบร้อย');
         redirect('/customers?company_id=' . (int) $id);
     }
@@ -337,6 +340,45 @@ final class CompanyController
     }
 
     /**
+     * Save where each column of the table takes its data (sources[key] = '' for กรอกเอง, or another company's id for
+     * ดึงจาก). Only a company with its own data can link; returns [old links, new links] for the activity log.
+     * A column going back to กรอกเอง starts from source_reset[key]: '' = this table's own data as it is, 'copy' = the
+     * values it was showing from the other table, 'empty' = blank.
+     */
+    private function saveColumnSources(int $companyId): array
+    {
+        $posted = $_POST['sources'] ?? null;
+        $customers = new CustomerRepository();
+        if (!is_array($posted) || $customers->dataCompany($companyId) === null) {
+            return [[], []];
+        }
+        $companyIds = array_map(static fn (array $c): int => (int) $c['id'], (new CompanyRepository())->all());
+        $sources = new CompanyColumnSourceRepository();
+        $old = $sources->forCompany($companyId);
+        $next = [];
+        foreach (CompanyColumnSourceRepository::LINKABLE_FIELDS as $key) {
+            // Only the columns shown in the table send a choice; a hidden column keeps its link.
+            $sourceId = array_key_exists($key, $posted) ? (int) $posted[$key] : (int) ($old[$key] ?? 0);
+            if ($sourceId > 0 && $sourceId !== $companyId && in_array($sourceId, $companyIds, true)) {
+                $next[$key] = $sourceId;
+            }
+        }
+        $resets = is_array($_POST['source_reset'] ?? null) ? $_POST['source_reset'] : [];
+        foreach ($old as $key => $oldSourceId) {
+            $mode = (string) ($resets[$key] ?? '');
+            if (!isset($next[$key]) && in_array($mode, ['copy', 'empty'], true)) {
+                $customers->resetCompanyColumn($companyId, $key, $mode === 'copy' ? $oldSourceId : null);
+                $next['reset:' . $key] = $mode;  // logged only; not a link
+            }
+        }
+        $links = array_filter($next, static fn ($value, $key): bool => !str_starts_with((string) $key, 'reset:'), ARRAY_FILTER_USE_BOTH);
+        if ($links !== $old) {
+            $sources->replaceForCompany($companyId, $links);
+        }
+        return [$old, $next];
+    }
+
+    /**
      * Header names typed into the column-order list (labels[key]). A custom column is renamed in place; a built-in
      * one keeps a per-company name, and typing its default name back (default_labels[key]) or leaving it blank
      * removes that. Names of columns not posted (hidden ones) are kept. Returns the names that changed.
@@ -472,10 +514,32 @@ final class CompanyController
         // A customer may appear several times (the + button in the picker): one company-table row per appearance.
         $raw = trim((string) ($_POST['customer_ids'] ?? ''));
         $customerIds = $raw === '' ? [] : array_values(array_filter(array_map('intval', explode(',', $raw))));
+        $startYear = preg_match('/^\d{4}$/', $startYear) ? $startYear : null;
         return [
-            'start_year' => preg_match('/^\d{4}$/', $startYear) ? $startYear : null,
-            'customer_ids' => $customerIds,
+            'start_year' => $startYear,
+            'customer_ids' => $startYear === null ? $customerIds : $this->customersOfYear($startYear, $customerIds),
         ];
+    }
+
+    /**
+     * A company with a contract-signing year (พ.ศ.) keeps only the ticked customers who signed that year: ticks left
+     * over from other years are dropped, while a customer of the year the user unticked stays out. The picker ticks
+     * the whole year when the year is picked; a customer added more than once with + keeps its extra rows.
+     */
+    private function customersOfYear(string $buddhistYear, array $submittedIds): array
+    {
+        $yearIds = [];
+        foreach ((new CustomerRepository())->listForSelection() as $customer) {
+            $date = (string) ($customer['contract_sign_date'] ?? '');
+            if ($date !== '' && (string) ((int) substr($date, 0, 4) + 543) === $buddhistYear) {
+                $yearIds[(int) $customer['id']] = true;
+            }
+        }
+        // No customer of that year found (e.g. Landy Home could not be read): keep the ticked list as it is.
+        if ($yearIds === []) {
+            return $submittedIds;
+        }
+        return array_values(array_filter($submittedIds, static fn (int $id): bool => isset($yearIds[$id])));
     }
 
     private function verifyCsrf(): void

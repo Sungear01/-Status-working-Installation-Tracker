@@ -93,8 +93,7 @@ final class CustomerController
 
         // The built-in "วิศวกร" column lives in its own table, so it is merged onto each row like a custom column.
         $tableCompanyId = $activeGroup === null ? (int) ($viewFilters['company_id'] ?? 0) : 0;
-        $engineers = new EngineerRepository();
-        $engineerValues = $engineers->valuesFor(array_column($result['items'], 'id'), $repository->dataCompany($tableCompanyId));
+        $engineerValues = (new EngineerRepository())->valuesFor(array_column($result['items'], 'id'));
         foreach ($result['items'] as &$item) {
             $item['engineer'] = $engineerValues[(int) $item['id']] ?? null;
         }
@@ -107,7 +106,11 @@ final class CustomerController
             'columnLabels' => $activeGroup === null && ($viewFilters['company_id'] ?? '') !== ''
                 ? (new \App\Repositories\CompanyColumnLabelRepository())->forCompany((int) $viewFilters['company_id'])
                 : [],
-            'engineerOptions' => $engineers->names(),
+            // Columns of this table read from another company's table ("ดึงจาก"); only a company with its own data links.
+            'canLinkColumns' => $tableCompanyId > 0 && $repository->dataCompany($tableCompanyId) !== null,
+            'columnSources' => $tableCompanyId > 0 && $repository->dataCompany($tableCompanyId) !== null
+                ? (new \App\Repositories\CompanyColumnSourceRepository())->forCompany($tableCompanyId)
+                : [],
             'facets' => $repository->facets($tableCompanyId),
             'filters' => $viewFilters,
             'companies' => $companies,
@@ -138,7 +141,7 @@ final class CustomerController
             exit('ไม่พบข้อมูลลูกค้า');
         }
         $this->assertCompanyAccess($id, $companyId);
-        $customer['engineer'] = (new EngineerRepository())->valueFor((int) $id, $repository->dataCompany($companyId));
+        $customer['engineer'] = (new EngineerRepository())->valueFor((int) $id);
         $customer['base_name'] = $customer['name'];
         $customer['assignment_id'] = null;
         if ($assignment !== null && $repository->supportsAssignmentNames()) {
@@ -213,7 +216,7 @@ final class CustomerController
             $data['row_name'] = $rowName;  // shown in the edit history only
         }
         $customValues = $this->saveCustomValues((int) $id);
-        $engineerValue = $this->saveEngineer((int) $id, $repository->dataCompany($companyId));
+        $engineerValue = ['engineer' => (new EngineerRepository())->valueFor((int) $id)];
         $savedCustomer = $repository->find($id, $companyId);
         if ($savedCustomer) {
             (new MailService())->sendCustomerSavedToAdmins($savedCustomer, Auth::user(), false);
@@ -237,23 +240,6 @@ final class CustomerController
             redirect('/customers' . ($search !== '' ? '?search=' . rawurlencode($search) : ''));
         }
         redirect('/customers/' . rawurlencode($id) . ($assignment !== null ? '?assignment=' . (int) $assignment['id'] : ''));
-    }
-
-    /**
-     * Save the "วิศวกร" dropdown when it was posted, and return the stored value as ['engineer' => ...] so the
-     * table can repaint the cell. A request that does not carry the field leaves the saved engineer alone.
-     * $dataCompany: the company table's own picks (see CustomerRepository::dataCompany()), null = the shared ones.
-     */
-    private function saveEngineer(int $customerId, ?int $dataCompany): array
-    {
-        $engineers = new EngineerRepository();
-        if (!array_key_exists('engineer', $_POST) || !$this->canEditField('engineer')) {
-            return ['engineer' => $engineers->valueFor($customerId, $dataCompany)];
-        }
-        $value = mb_substr(trim((string) $_POST['engineer']), 0, EngineerRepository::MAX_LENGTH);
-        $engineers->saveValue($customerId, $value, $dataCompany);
-        // Re-read rather than echo $value: clearing the pick falls back to the worksheet engineer from Landy Home.
-        return ['engineer' => $engineers->valueFor($customerId, $dataCompany)];
     }
 
     /**
@@ -339,13 +325,12 @@ final class CustomerController
         }
         $repository = new CustomerRepository();
         $rows = $repository->filtered($filters);
-        $dataCompany = empty($filters['company_ids']) && ($filters['group_id'] ?? '') === '' ? $repository->dataCompany((int) ($filters['company_id'] ?? 0)) : null;
         (new ActivityLogger())->log('export', 'customer', null, 'Export ' . strtoupper($format) . ' จำนวน ' . count($rows) . ' รายการ');
         $headers = ['ลำดับ','รายชื่อลูกค้า','Zone','ขนาดเครื่อง','วันที่ส่ง PO','กำหนดหลังจัดส่ง PO','นัดติดตั้ง 1','ติดตั้ง 1','นัดติดตั้ง 2','ติดตั้ง 2','นัดติดตั้ง 3','ครบกำหนด 60 วัน','วันช้า/เร็ว','Status','หมายเหตุทางฝ่ายก่อสร้าง','สถานะงาน','หมายเหตุทาง CAP+'];
         $fields = ['name','zone','machine_size','po_sent_date','po_due_date','engineer_appointment_1','installation_date_1','engineer_appointment_2','installation_date_2','engineer_appointment_3','due_60_date','days_early_late','status','construction_notes','work_status','cap_notes','installation_date_3'];
         $headers[] = 'วันที่เข้าติดตั้งครั้งที่ 3';
-        // The engineer of each row comes from its own table, so it is merged in and exported as a last column.
-        $engineerValues = (new EngineerRepository())->valuesFor(array_column($rows, 'id'), $dataCompany);
+        // The engineer of each row is read from Landy Home, so it is merged in and exported as a last column.
+        $engineerValues = (new EngineerRepository())->valuesFor(array_column($rows, 'id'));
         foreach ($rows as &$exportRow) {
             $exportRow['engineer'] = $engineerValues[(int) $exportRow['id']] ?? '';
         }
@@ -427,13 +412,14 @@ final class CustomerController
         }
         // Both calculated deadlines use the PO due date as the source date (+61 days).
         if ($this->canEditField('po_sent_date') && array_key_exists('po_sent_date', $_POST)) {
+            $typedDue60 = $this->typedDue60($data['due_60_date']);
             if ($data['po_sent_date'] === null) {
                 $data['po_due_date'] = null;
-                $data['due_60_date'] = null;
+                $data['due_60_date'] = $typedDue60;
             } else {
                 $sourceDate = new \DateTimeImmutable($data['po_sent_date']);
                 $data['po_due_date'] = $sourceDate->modify('+61 days')->format('Y-m-d');
-                $data['due_60_date'] = $sourceDate->modify('+60 days')->format('Y-m-d');
+                $data['due_60_date'] = $typedDue60 ?? $sourceDate->modify('+60 days')->format('Y-m-d');
             }
         }
         return $data;
@@ -461,16 +447,26 @@ final class CustomerController
         }
         // PO deadlines are calculated only in the update path used by the table Modal.
         if ($this->canEditField('po_sent_date') && array_key_exists('po_sent_date', $_POST)) {
+            $typedDue60 = $this->typedDue60($data['due_60_date']);
             if ($data['po_sent_date'] === null) {
                 $data['po_due_date'] = null;
-                $data['due_60_date'] = null;
+                $data['due_60_date'] = $typedDue60;
             } else {
                 $sourceDate = new \DateTimeImmutable($data['po_sent_date']);
                 $data['po_due_date'] = $sourceDate->modify('+61 days')->format('Y-m-d');
-                $data['due_60_date'] = $sourceDate->modify('+60 days')->format('Y-m-d');
+                $data['due_60_date'] = $typedDue60 ?? $sourceDate->modify('+60 days')->format('Y-m-d');
             }
         }
         return $data;
+    }
+
+    /**
+     * The ครบกำหนด 60 วัน ครั้งที่ 2 date typed by a user allowed to edit it, which wins over PO +60 days; null = none
+     * (the Modal fills in PO +60 days itself whenever the PO date changes, so a typed date is only kept on purpose).
+     */
+    private function typedDue60(?string $value): ?string
+    {
+        return $this->canEditField('due_60_date') && array_key_exists('due_60_date', $_POST) ? $value : null;
     }
 
     private function fieldValue(string $field, mixed $existing, int $length): ?string
